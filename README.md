@@ -93,10 +93,10 @@ The system includes an intelligent chatbot that allows users to:
 
 Each team member is responsible for specific sensor analysis:
 
-* **MovementMagnitude** — Harishalinee Elangovan(IT22057488)
-* **EDA** — Kaushalya Nagenthraraja(IT22289384)
-* **HR** — Dayana Priyadharshani Kumar(IT22178640)
-* **TEMP** — Vidursha Prabagaran(IT22294098)
+* **MovementMagnitude** - Harishalinee Elangovan(IT22057488)
+* **EDA** - Kaushalya Nagenthraraja(IT22289384)
+* **HR** - Dayana Priyadharshani Kumar(IT22178640)
+* **TEMP** - Vidursha Prabagaran(IT22294098)
 
 ---
 ## 🎨 User Persona
