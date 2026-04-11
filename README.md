@@ -4,7 +4,7 @@
 
 This project analyzes physiological and motion sensor data collected from caregivers using wearable devices. The system predicts caregiver stress levels and presents insights using an interactive visual analytics dashboard.
 
-The application is developed using **FastAPI (backend), Streamlit (frontend), and SQLite (database). It also includes a conversational chatbot that helps users explore data and understand trends.
+The application is developed using FastAPI (backend), Streamlit (frontend), and SQLite (database). It also includes a conversational chatbot that helps users explore data and understand trends.
 
 ---
 
