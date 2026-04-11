@@ -1,5 +1,4 @@
-# Design, Evaluation, and Handoff of a Responsive Web-Based Visual Analytics 
-Dashboard for Sensor-Driven Data
+# Caregiver Stress Prediction using Wearable Sensor Data
 
 ## 📌 Project Overview
 
