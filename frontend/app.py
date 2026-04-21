@@ -1,5 +1,6 @@
 import html as html_module
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ import requests
 import streamlit as st
 from streamlit_plotly_events import plotly_events
 from streamlit_option_menu import option_menu
+from plotly.subplots import make_subplots
 
 API_BASE = os.environ.get("VAUED_API_BASE", "http://127.0.0.1:5000")
 
@@ -21,7 +23,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-COLOR_MAP = {"Low": "#2ca02c", "Medium": "#ff7f0e", "High": "#d62728"}
+COLOR_MAP = {
+    # Muted, healthcare-appropriate tones (lower contrast, still intuitive)
+    "Low": "#2f8f6b",  # muted green
+    "Medium": "#d2a33a",  # muted amber
+    "High": "#cf5f5f",  # muted red
+}
 
 HEATMAP_COLORSCALE = [
     [0.0, "#2ca02c"],  # label 0 = Low (green)
@@ -30,10 +37,11 @@ HEATMAP_COLORSCALE = [
 ]
 
 KPI_STYLES = [
-    ("#0f766e", "#ecfdf5", "Caregivers"),
-    ("#15803d", "#f0fdf4", "Temperature"),
-    ("#047857", "#ecfdf5", "Stress index"),
-    ("#065f46", "#f0fdf4", "Heart rate"),
+    # consistent green shades (light → dark gradient for hierarchy)
+    ("#16a34a", "#f0fdf4", "Caregivers"),
+    ("#15803d", "#ecfdf5", "Temperature"),
+    ("#166534", "#f0fdf4", "Stress index"),
+    ("#14532d", "#ecfdf5", "Heart rate"),
 ]
 
 POPUP_CSS = """
@@ -64,6 +72,12 @@ DASHBOARD_CSS = """
     --brandB: #16a34a;   /* green */
     --brandC: #047857;   /* emerald */
     --focus: rgba(16, 185, 129, 0.35);
+
+    /* Button palette (match sidebar theme) */
+    --btnA: #16a34a; /* green-600 */
+    --btnB: #14b8a6; /* teal-500 */
+    --btnHoverA: #15803d; /* green-700 */
+    --btnHoverB: #0d9488; /* teal-600 */
 }
 
 .stApp, .stApp * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -98,6 +112,22 @@ div[data-testid="stPlotlyChart"] > div {
     border: 1px solid rgba(15, 23, 42, 0.10);
     box-shadow: var(--shadowSoft);
     background: var(--card);
+    transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+div[data-testid="stPlotlyChart"] > div:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 34px rgba(2, 6, 23, 0.10);
+    border-color: rgba(16, 185, 129, 0.25);
+}
+
+/* KPI card hover */
+.kpi-card {
+    transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+.kpi-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 16px 36px rgba(2, 6, 23, 0.10) !important;
+    border-color: rgba(16, 185, 129, 0.28) !important;
 }
 div[data-testid="stTabs"] button { font-weight: 600 !important; }
 
@@ -131,17 +161,41 @@ div[data-baseweb="textarea"] > div:has(textarea:focus) {
 /* Buttons */
 button[kind="primary"] {
     border-radius: 12px !important;
-    background: linear-gradient(90deg, var(--brandA), var(--brandB)) !important;
-    border: 1px solid rgba(15, 23, 42, 0.08) !important;
+    background: linear-gradient(90deg, var(--btnA), var(--btnB)) !important;
+    border: 1px solid rgba(15, 23, 42, 0.10) !important;
+    color: #ffffff !important;
+    font-weight: 800 !important;
+    transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease !important;
+}
+button[kind="primary"]:hover {
+    background: linear-gradient(90deg, var(--btnHoverA), var(--btnHoverB)) !important;
+    filter: saturate(1.05);
+    box-shadow: 0 12px 26px rgba(2, 6, 23, 0.14) !important;
+    transform: translateY(-1px);
+}
+button[kind="primary"]:active {
+    transform: translateY(0px);
+    box-shadow: 0 8px 18px rgba(2, 6, 23, 0.12) !important;
 }
 button[kind="secondary"] {
     border-radius: 12px !important;
-    border: 1px solid rgba(15, 23, 42, 0.12) !important;
+    border: 1px solid rgba(20, 184, 166, 0.30) !important;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 250, 0.72)) !important;
+    color: #0f766e !important;
+    font-weight: 750 !important;
+    transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease !important;
+}
+button[kind="secondary"]:hover {
+    border-color: rgba(13, 148, 136, 0.55) !important;
+    box-shadow: 0 10px 22px rgba(2, 6, 23, 0.10) !important;
+    transform: translateY(-1px);
+}
+button[kind="secondary"]:active {
+    transform: translateY(0px);
+    box-shadow: 0 7px 16px rgba(2, 6, 23, 0.09) !important;
 }
 </style>
 """
-
-
 def _stress_trend_series(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
     """Bucket sensor rows; trend uses % high-stress readings (label==2) and volume — no mean label."""
     d = df.dropna(subset=["datetime"]).copy()
@@ -165,6 +219,81 @@ def _stress_trend_series(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
         out["_sort"] = pd.to_datetime(out["_p"], errors="coerce")
     out = out.sort_values("_sort")
     return out.rename(columns={"_p": "period"})
+
+
+def _month_stress_distribution(df: pd.DataFrame) -> pd.DataFrame:
+    """Monthly counts by Low/Medium/High stress (Apr–Dec slice expected)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "year_month" not in df.columns or "Stress_Category" not in df.columns:
+        return pd.DataFrame()
+    d = df.dropna(subset=["year_month", "Stress_Category"]).copy()
+    if d.empty:
+        return pd.DataFrame()
+    out = (
+        d.groupby(["year_month", "Stress_Category"], as_index=False)
+        .size()
+        .rename(columns={"size": "count"})
+    )
+    out["year_month"] = out["year_month"].astype(str)
+    out["Stress_Category"] = out["Stress_Category"].astype(str)
+    out["_sort"] = pd.to_datetime(out["year_month"] + "-01", errors="coerce")
+    return out.sort_values(["_sort", "Stress_Category"]).drop(columns=["_sort"])
+
+
+def _stress_month_interpretation(high_pct: float) -> str:
+    try:
+        v = float(high_pct)
+    except (TypeError, ValueError):
+        return "Stress level unclear"
+    if v >= 40:
+        return "High-stress month"
+    if v >= 20:
+        return "Moderate-stress month"
+    return "Lower-stress month"
+
+
+def _trend_direction_label(month_trend: pd.DataFrame) -> tuple[str, float]:
+    """Return (plain-language label, slope per month) for % high stress trend."""
+    if month_trend is None or month_trend.empty or len(month_trend) < 2:
+        return "No clear trend yet", 0.0
+    d = month_trend.dropna(subset=["high_stress_pct", "_sort"]).copy()
+    if len(d) < 2:
+        return "No clear trend yet", 0.0
+    x = np.arange(len(d), dtype=float)
+    y = d["high_stress_pct"].astype(float).to_numpy()
+    try:
+        slope = float(np.polyfit(x, y, 1)[0])
+    except Exception:
+        slope = 0.0
+    if abs(slope) < 0.5:
+        return "Overall, stress looks fairly stable month-to-month", slope
+    if slope > 0:
+        return "Overall, high-stress readings are increasing over time", slope
+    return "Overall, high-stress readings are decreasing over time", slope
+
+
+def _daily_trend_label(day_trend: pd.DataFrame) -> tuple[str, float, float]:
+    """Return (label, slope per day, volatility stddev) for daily % high stress in a month."""
+    if day_trend is None or day_trend.empty or len(day_trend) < 2:
+        return "Not enough daily data to describe a trend", 0.0, 0.0
+    d = day_trend.dropna(subset=["high_stress_pct", "_sort"]).copy()
+    if len(d) < 2:
+        return "Not enough daily data to describe a trend", 0.0, 0.0
+    x = np.arange(len(d), dtype=float)
+    y = d["high_stress_pct"].astype(float).to_numpy()
+    try:
+        slope = float(np.polyfit(x, y, 1)[0])
+    except Exception:
+        slope = 0.0
+    vol = float(np.nanstd(y)) if len(y) else 0.0
+    if vol >= 18:
+        return "Volatile month (stress swings day-to-day)", slope, vol
+    if abs(slope) < 0.9:
+        return "Stable month overall (small day-to-day change)", slope, vol
+    if slope > 0:
+        return "Rising stress across the month", slope, vol
+    return "Easing stress across the month", slope, vol
 
 
 def _correlation_matrix_fig(df: pd.DataFrame) -> go.Figure:
@@ -207,6 +336,7 @@ def _prepare_sensor_df(raw: pd.DataFrame) -> pd.DataFrame:
     if "id" in df.columns:
         df["id"] = df["id"].astype(str)
     if "label" in df.columns:
+        df["label_num"] = pd.to_numeric(df["label"], errors="coerce")
         df["Stress_Category"] = df["label"].map({0: "Low", 1: "Medium", 2: "High"})
     if "datetime" in df.columns:
         df["year_month"] = df["datetime"].dt.strftime("%Y-%m")
@@ -224,14 +354,65 @@ def filter_apr_through_dec(df: pd.DataFrame) -> pd.DataFrame:
 def month_filter_options(df: pd.DataFrame) -> list[str]:
     d = filter_apr_through_dec(df)
     ys = sorted(d["year_month"].dropna().unique())
-    return ["All (April–December)"] + list(ys)
+    return list(ys)
+
+
+def default_month_choice(month_choices: list[str]) -> str | None:
+    """Prefer April in the available set; otherwise pick the earliest month."""
+    if not month_choices:
+        return None
+    april = [m for m in month_choices if str(m).endswith("-04")]
+    if april:
+        return sorted(april)[0]
+    return month_choices[0]
 
 
 def slice_for_dashboard(df: pd.DataFrame, month_choice: str) -> pd.DataFrame:
     out = filter_apr_through_dec(df)
-    if month_choice and month_choice != "All (April–December)":
+    if month_choice:
         out = out[out["year_month"] == month_choice]
     return out
+
+
+def signal_means_by_stress(filtered_df: pd.DataFrame) -> pd.DataFrame:
+    """Average EDA/HR/TEMP/Movement by stress label for the current filter."""
+    if filtered_df is None or filtered_df.empty:
+        return pd.DataFrame()
+    cols = ["label_num", "EDA", "HR", "TEMP", "MovementMagnitude"]
+    if any(c not in filtered_df.columns for c in cols):
+        return pd.DataFrame()
+    signal_df = filtered_df.dropna(subset=cols)
+    signal_df = signal_df[signal_df["label_num"].isin([0, 1, 2])]
+    if signal_df.empty:
+        return pd.DataFrame()
+    return (
+        signal_df.groupby("label_num", as_index=False)[["EDA", "HR", "TEMP", "MovementMagnitude"]]
+        .mean()
+        .rename(columns={"label_num": "label"})
+        .sort_values("label")
+    )
+
+
+def high_stress_contribution_by_month(df: pd.DataFrame, selected_month: str) -> pd.DataFrame:
+    """High-stress reading contribution counts by caregiver for a selected month."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["id", "high_count", "pct"])
+    month_data = slice_for_dashboard(df, selected_month)
+    if month_data.empty or "label_num" not in month_data.columns:
+        return pd.DataFrame(columns=["id", "high_count", "pct"])
+    high_month = month_data[month_data["label_num"] == 2]
+    if high_month.empty:
+        return pd.DataFrame(columns=["id", "high_count", "pct"])
+    contrib = (
+        high_month.groupby("id", as_index=False)
+        .size()
+        .rename(columns={"size": "high_count"})
+        .sort_values(["high_count", "id"], ascending=[False, True])
+    )
+    total_high = int(contrib["high_count"].sum())
+    contrib["pct"] = np.where(total_high > 0, (contrib["high_count"] / total_high) * 100.0, 0.0)
+    contrib["id"] = contrib["id"].astype(str)
+    return contrib
 
 
 def label_to_stress_phrase(label: float) -> str:
@@ -342,78 +523,12 @@ def render_sensor_popup_html(rec: dict) -> str:
     """
 
 
-def build_heatmap_bundle(exec_df: pd.DataFrame, month_choice: str):
+def _heatmap_matrix_bundle(exec_df: pd.DataFrame):
     lookup = {}
     motion_max = float(exec_df["MovementMagnitude"].max()) if not exec_df.empty else 1.0
     if exec_df.empty:
-        fig = go.Figure()
-        fig.add_annotation(
-            text="No data",
-            xref="paper",
-            yref="paper",
-            x=0.5,
-            y=0.5,
-            showarrow=False,
-            font=dict(size=14, color="#94a3b8"),
-        )
-        fig.update_layout(height=360, paper_bgcolor="#f8fafc", plot_bgcolor="#f8fafc")
-        return fig, lookup, 360
+        return [], [], [], [], lookup, 360
 
-    if month_choice == "All (April–December)":
-        # For aggregated view, show the latest available reading (end-of-shift proxy) per caregiver.
-        x_labels = ["Apr–Dec (latest reading)"]
-        ex = exec_df.copy()
-        ex["id"] = ex["id"].astype(str)
-        ex = ex.dropna(subset=["datetime"])
-        ex = ex.sort_values("datetime")
-        last_rows = ex.groupby("id", as_index=False).tail(1)
-        ids = sorted(last_rows["id"].unique().tolist())
-
-        z = []
-        text = []
-        for cid in ids:
-            row = last_rows[last_rows["id"] == cid].iloc[0]
-            lbl = float(row["label"])
-            z.append([lbl])
-            when = row["datetime"].strftime("%Y-%m-%d") if pd.notna(row["datetime"]) else ""
-            text.append([f"{int(lbl)}<br>{when}"])
-            lookup[(str(cid), x_labels[0])] = row_to_popup_record(row, motion_max)
-
-        fig = go.Figure(
-            data=go.Heatmap(
-                z=z,
-                x=x_labels,
-                y=[str(i) for i in ids],
-                text=text,
-                texttemplate="%{text}",
-                textfont={"size": 10},
-                colorscale=HEATMAP_COLORSCALE,
-                zmin=0,
-                zmax=2,
-                colorbar=dict(
-                    title="Stress (label)",
-                    tickvals=[0, 1, 2],
-                    ticktext=["Low", "Med", "High"],
-                    len=0.5,
-                ),
-                hoverongaps=False,
-                xgap=1,
-                ygap=1,
-            )
-        )
-        h = max(320, 40 * len(ids) + 120)
-        fig.update_layout(
-            title="Stress by caregiver (latest reading in Apr–Dec)",
-            xaxis=dict(side="bottom", type="category"),
-            yaxis=dict(autorange="reversed", type="category"),
-            height=h,
-            paper_bgcolor="#ffffff",
-            plot_bgcolor="#f8fafc",
-            margin=dict(l=60, r=30, t=50, b=60),
-        )
-        return fig, lookup, h
-
-    # Month view: Use only the last record of each day per caregiver (shift ending proxy).
     ex = exec_df.copy()
     ex["id"] = ex["id"].astype(str)
     ex["datetime"] = pd.to_datetime(ex["datetime"], errors="coerce")
@@ -447,6 +562,26 @@ def build_heatmap_bundle(exec_df: pd.DataFrame, month_choice: str):
         z.append(row_z)
         text.append(row_t)
 
+    h = max(380, 40 * len(ids) + 160)
+    return ids, days, z, text, lookup, h
+
+
+def build_heatmap_bundle(exec_df: pd.DataFrame, month_choice: str):
+    ids, days, z, text, lookup, h = _heatmap_matrix_bundle(exec_df)
+    if not ids or not days:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=14, color="#94a3b8"),
+        )
+        fig.update_layout(height=360, paper_bgcolor="#f8fafc", plot_bgcolor="#f8fafc")
+        return fig, lookup, 360
+
     fig = go.Figure(
         data=go.Heatmap(
             z=z,
@@ -464,7 +599,6 @@ def build_heatmap_bundle(exec_df: pd.DataFrame, month_choice: str):
             ygap=1,
         )
     )
-    h = max(380, 40 * len(ids) + 160)
     fig.update_layout(
         title=f"Stress — {month_choice}",
         xaxis=dict(side="bottom", tickangle=-40, type="category"),
@@ -477,7 +611,67 @@ def build_heatmap_bundle(exec_df: pd.DataFrame, month_choice: str):
     return fig, lookup, h
 
 
-@st.cache_data(ttl=30)
+def _coverage_month_prep(month_trend: pd.DataFrame, month_dist: pd.DataFrame):
+    hover_lookup = month_trend[["period", "readings", "high_stress_pct"]].rename(columns={"period": "year_month"})
+    month_dist2 = month_dist.merge(hover_lookup, on="year_month", how="left")
+    month_dist2["interpretation"] = month_dist2["high_stress_pct"].map(_stress_month_interpretation)
+
+    mwide = (
+        month_dist2.pivot_table(index="year_month", columns="Stress_Category", values="count", aggfunc="sum")
+        .fillna(0)
+        .reset_index()
+    )
+    for col in ["Low", "Medium", "High"]:
+        if col not in mwide.columns:
+            mwide[col] = 0
+    mwide["total_readings"] = (mwide["Low"] + mwide["Medium"] + mwide["High"]).astype(int)
+    mwide = mwide.merge(
+        month_trend[["period", "high_stress_pct"]].rename(columns={"period": "year_month"}),
+        on="year_month",
+        how="left",
+    )
+    fallback_pct = pd.Series(
+        np.where(mwide["total_readings"] > 0, 100.0 * (mwide["High"] / mwide["total_readings"]), 0.0),
+        index=mwide.index,
+        dtype="float64",
+    )
+    mwide["high_stress_pct"] = mwide["high_stress_pct"].astype("float64").fillna(fallback_pct)
+    mwide["interpretation"] = mwide["high_stress_pct"].map(_stress_month_interpretation)
+    mwide["month_label"] = pd.to_datetime(mwide["year_month"] + "-01", errors="coerce").dt.strftime("%b %Y")
+    mwide["month_label"] = mwide["month_label"].fillna(mwide["year_month"].astype(str))
+    month_tip = {
+        str(r["year_month"]): (
+            str(r["month_label"]),
+            int(r["total_readings"]),
+        )
+        for _, r in mwide.iterrows()
+    }
+    return month_dist2, mwide, month_tip
+
+
+def _coverage_daily_prep(sub_m: pd.DataFrame, day_trend: pd.DataFrame) -> pd.DataFrame:
+    dd = sub_m.dropna(subset=["date_key", "Stress_Category"]).copy()
+    day_dist = (
+        dd.groupby(["date_key", "Stress_Category"], as_index=False)
+        .size()
+        .rename(columns={"size": "count"})
+    )
+    piv = (
+        day_dist.pivot_table(index="date_key", columns="Stress_Category", values="count", aggfunc="sum")
+        .fillna(0)
+        .reset_index()
+    )
+    for col in ["Low", "Medium", "High"]:
+        if col not in piv.columns:
+            piv[col] = 0
+    piv["date_key"] = piv["date_key"].astype(str)
+
+    daily = day_trend.merge(piv, left_on="period", right_on="date_key", how="left").fillna(0)
+    daily["interpretation"] = daily["high_stress_pct"].map(_stress_month_interpretation)
+    daily["high_count"] = daily["High"].astype(int)
+    return daily
+
+@st.cache_data(ttl=300)
 def load_sensor_data() -> pd.DataFrame:
     try:
         r = requests.get(f"{API_BASE}/api/sensor/records", timeout=4)
@@ -490,7 +684,7 @@ def load_sensor_data() -> pd.DataFrame:
     return _prepare_sensor_df(df)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=300)
 def load_caregiver_details() -> pd.DataFrame:
     try:
         r = requests.get(f"{API_BASE}/api/caregivers", timeout=4)
@@ -518,6 +712,99 @@ def post_chat(message: str, ui_state: dict, heatmap_cell: dict | None = None) ->
         return f"Could not reach the chat API ({exc}). Is the Flask server running on {API_BASE}?"
 
 
+def _chat_inline_md_to_html(text: str) -> str:
+    """Minimal markdown for chat bubbles: **bold** and newlines. Escapes HTML first."""
+    t = html_module.escape(text)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    return t.replace("\n", "<br/>")
+
+
+# Inline SVG avatars (Ward Supervisor vs assistant bot) — no gradient IDs so rows can repeat safely
+_AVATAR_SUPERVISOR_SVG = """
+<svg class="msg-avatar-svg" viewBox="0 0 44 44" width="44" height="44" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <circle cx="22" cy="22" r="20" fill="#0d9488"/>
+  <circle cx="22" cy="22" r="20" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+  <path fill="rgba(255,255,255,0.95)" d="M22 12a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Zm-6.2 9.8c0-1.1.9-2 2-2h8.4c1.1 0 2 .9 2 2v.3c0 2.4-2.4 4.4-6.2 4.4s-6.2-2-6.2-4.4v-.3Z"/>
+  <path fill="rgba(255,255,255,0.88)" d="M14 28.5h16v1.6c0 .8-.7 1.5-1.5 1.5h-13c-.8 0-1.5-.7-1.5-1.5v-1.6Z"/>
+</svg>
+""".strip()
+
+_AVATAR_BOT_SVG = """
+<svg class="msg-avatar-svg" viewBox="0 0 44 44" width="44" height="44" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <circle cx="22" cy="22" r="20" fill="#16a34a"/>
+  <circle cx="22" cy="22" r="20" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
+  <rect x="13" y="16" width="18" height="12" rx="3" fill="rgba(255,255,255,0.92)"/>
+  <circle cx="17.5" cy="22" r="1.6" fill="#047857"/>
+  <circle cx="26.5" cy="22" r="1.6" fill="#047857"/>
+  <path fill="none" stroke="#047857" stroke-width="1.4" stroke-linecap="round" d="M18 26.5h8"/>
+  <path fill="rgba(255,255,255,0.85)" d="M19 14h6v2.2a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1V14Z"/>
+</svg>
+""".strip()
+
+_HEADER_BOT_ICON = _AVATAR_BOT_SVG.replace('width="44" height="44"', 'width="42" height="42"', 1).replace(
+    'class="msg-avatar-svg"', 'class="msg-avatar-svg header-bot-icon"', 1
+)
+
+
+def _render_chat_thread_html(messages: list[dict]) -> str:
+    """Build scrollable messaging-style thread with bubbles and avatars."""
+    parts: list[str] = []
+    for m in messages:
+        body = _chat_inline_md_to_html(m["content"])
+        if m["role"] == "user":
+            parts.append(
+                f"""
+<div class="msg-row msg-row-user" role="article">
+  <div class="msg-meta msg-meta-user">Ward Supervisor</div>
+  <div class="msg-row-inner">
+    <div class="msg-bubble msg-bubble-user">{body}</div>
+    <div class="msg-avatar msg-avatar-user" title="Ward Supervisor">{_AVATAR_SUPERVISOR_SVG}</div>
+  </div>
+</div>
+""".strip()
+            )
+        else:
+            parts.append(
+                f"""
+<div class="msg-row msg-row-assistant" role="article">
+  <div class="msg-meta msg-meta-assistant">Care-Sync assistant</div>
+  <div class="msg-row-inner">
+    <div class="msg-avatar msg-avatar-assistant" title="Chatbot">{_AVATAR_BOT_SVG}</div>
+    <div class="msg-bubble msg-bubble-assistant">{body}</div>
+  </div>
+</div>
+""".strip()
+            )
+    return "\n".join(parts)
+
+
+def _append_chat_exchange(prompt: str, ui_state: dict) -> None:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages.append({"role": "assistant", "content": post_chat(prompt, ui_state)})
+
+
+def jump_to_assistant(prompt: str, month_label: str | None, selected_caregiver_id: str | None = None, heatmap_cell: dict | None = None):
+    st.session_state.nav_menu = "Assistant"
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Ask anything about **this wearable dataset** or the **dashboard**—I’ll ground "
+                    "answers in live stats. Questions outside that scope get a short “not for this dataset” reply."
+                ),
+            },
+        ]
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    ui_state = {
+        "selected_caregiver_id": selected_caregiver_id,
+        "month_label": month_label,
+        "active_view": "assistant",
+    }
+    st.session_state.messages.append({"role": "assistant", "content": post_chat(prompt, ui_state, heatmap_cell)})
+    st.rerun()
+
+
 @st.dialog("Sensor reading")
 def _heatmap_dialog(rec: dict, filter_month: str):
     st.markdown(POPUP_CSS, unsafe_allow_html=True)
@@ -540,7 +827,7 @@ def _heatmap_dialog(rec: dict, filter_month: str):
                     f"EDA {rec['EDA']:.2f} · temp {rec['temperature']:.2f}°C. What should I check next?"
                 )
                 heat_payload = None
-            st.session_state.nav_menu = "✨  Assistant"
+            st.session_state.nav_menu = "Assistant"
             if "messages" not in st.session_state:
                 st.session_state.messages = [
                     {
@@ -555,7 +842,7 @@ def _heatmap_dialog(rec: dict, filter_month: str):
             st.session_state.messages.append({"role": "user", "content": prompt})
             ui_jump = {
                 "selected_caregiver_id": rec["id"],
-                "month_label": None if filter_month == "All (April–December)" else filter_month,
+                "month_label": filter_month,
                 "active_view": "assistant",
             }
             st.session_state.messages.append(
@@ -570,12 +857,13 @@ def _heatmap_dialog(rec: dict, filter_month: str):
 def _kpi_card(col, accent: str, bg: str, title: str, value_str: str, subtitle: str):
     col.markdown(
         f"""
-        <div style="
+        <div class="kpi-card" style="
             background: linear-gradient(135deg, {bg} 0%, #ffffff 120%);
             border-left: 4px solid {accent};
             border-radius: 12px;
             padding: 16px 18px;
-            box-shadow: 0 1px 3px rgba(15,23,42,0.08);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            box-shadow: 0 8px 22px rgba(2, 6, 23, 0.06);
             min-height: 108px;
         ">
             <div style="font-size: 0.75rem; font-weight: 600; color: #64748b; letter-spacing: 0.02em; text-transform: uppercase;">{title}</div>
@@ -627,6 +915,9 @@ def _caregiver_card_html(row: pd.Series) -> str:
 
 sensor_df = load_sensor_data()
 month_choices = month_filter_options(sensor_df)
+if not month_choices:
+    st.error("No Apr–Dec months were found in the dataset.")
+    st.stop()
 
 SIDEBAR_CSS = """
 <style>
@@ -741,6 +1032,40 @@ section[data-testid="stSidebar"] a.nav-link:hover:not(.active) {
   font-weight: 900;
   float: right;
 }
+
+/* Global buttons — match sidebar color family everywhere */
+button[kind="primary"] {
+  background: linear-gradient(90deg, var(--sbActiveA), var(--sbActiveB)) !important;
+  border: 1px solid rgba(15, 23, 42, 0.10) !important;
+  color: #ffffff !important;
+  font-weight: 850 !important;
+  border-radius: 12px !important;
+  transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease !important;
+}
+button[kind="primary"]:hover {
+  filter: saturate(1.05);
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.14) !important;
+  transform: translateY(-1px);
+}
+button[kind="primary"]:active {
+  transform: translateY(0px);
+}
+button[kind="secondary"] {
+  border-radius: 12px !important;
+  border: 1px solid rgba(20, 184, 166, 0.30) !important;
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(240, 253, 250, 0.72)) !important;
+  color: #0f766e !important;
+  font-weight: 750 !important;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease !important;
+}
+button[kind="secondary"]:hover {
+  border-color: rgba(13, 148, 136, 0.55) !important;
+  box-shadow: 0 10px 22px rgba(2, 6, 23, 0.10) !important;
+  transform: translateY(-1px);
+}
+button[kind="secondary"]:active {
+  transform: translateY(0px);
+}
 </style>
 """
 
@@ -815,11 +1140,9 @@ with st.sidebar:
 st.session_state.nav_menu = menu
 
 if "filter_month" not in st.session_state:
-    st.session_state.filter_month = "All (April–December)"
-if st.session_state.filter_month in ("All months",):
-    st.session_state.filter_month = "All (April–December)"
+    st.session_state.filter_month = default_month_choice(month_choices)
 if st.session_state.filter_month not in month_choices:
-    st.session_state.filter_month = month_choices[0]
+    st.session_state.filter_month = default_month_choice(month_choices)
 
 if menu == "Dashboard":
     filter_month = st.selectbox("Month", month_choices, key="filter_month")
@@ -858,8 +1181,22 @@ if menu == "Dashboard":
         _kpi_card(col, accent, bg, title, val, sub)
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("##### Stress heatmap")
-    st.caption("Click a cell for details.")
+    h1, h2 = st.columns([4, 1])
+    with h1:
+        st.markdown("##### 🧩 Stress heatmap")
+        st.caption(
+            "Shows the **daily stress label** (Low/Medium/High) per caregiver (y-axis) for the selected month (x-axis). "
+            "Darker colors indicate higher stress. Click a cell for the underlying reading."
+        )
+    with h2:
+        if st.button("Ask AI", use_container_width=True, key="ask_ai_heatmap"):
+            jump_to_assistant(
+                prompt=(
+                    f"Explain the stress heatmap for **{filter_month}**. "
+                    "Which caregivers look most frequently **High stress (label 2)**, and are there any notable day clusters?"
+                ),
+                month_label=filter_month,
+            )
 
     heat_fig, cell_lookup, heat_h = build_heatmap_bundle(exec_df, filter_month)
     events = plotly_events(
@@ -868,7 +1205,7 @@ if menu == "Dashboard":
         select_event=False,
         hover_event=False,
         override_height=min(900, max(420, heat_h + 100)),
-        key=f"heatmap_evt_{filter_month}",
+        key="heatmap_evt", 
     )
 
     if events:
@@ -889,47 +1226,119 @@ if menu == "Dashboard":
     cov_df = filter_apr_through_dec(sensor_df)
 
     with tab_cov:
-        st.markdown("**Coverage** · monthly stress dynamics")
-        st.caption(
-            "Bars = readings per calendar month · line = share of **High** stress readings. "
-            "**Click a month bar** (chart below) or pick a month to open the **daily** trend."
-        )
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.markdown("**📊 Coverage** · monthly stress dynamics")
+            st.caption(
+                "This view summarizes **how stress is distributed each month** (Low/Medium/High). "
+                "It helps a ward manager quickly see **which months were most concerning** and whether things are getting better or worse."
+            )
+        with c2:
+            if st.button("Ask AI", use_container_width=True, key="ask_ai_coverage"):
+                jump_to_assistant(
+                    prompt=(
+                        "Explain the Coverage chart: which months have the highest **% High-stress readings**, "
+                        "and how should we interpret spikes when the number of readings is low?"
+                    ),
+                    month_label=None,
+                )
         month_trend = _stress_trend_series(cov_df, "Month")
-        if month_trend.empty:
+        month_dist = _month_stress_distribution(cov_df)
+        if month_trend.empty or month_dist.empty:
             st.caption("No rows in Apr–Dec slice.")
         else:
+            # Plain-language summary + key insights
+            highest_row = month_trend.sort_values("high_stress_pct", ascending=False).iloc[0]
+            lowest_row = month_trend.sort_values("high_stress_pct", ascending=True).iloc[0]
+            trend_label, slope = _trend_direction_label(month_trend)
+            st.markdown(
+                f"""
+                **How to read this:** Each month is split into **Low (green)**, **Medium (amber)**, and **High (red)** readings.
+                A taller red section means **more high-stress readings that month**. Click a month to see its daily pattern below.
+
+                **Quick insight:** Highest stress was **{highest_row['period']}** ({highest_row['high_stress_pct']:.1f}% high stress, {int(highest_row['readings'])} readings).
+                Lowest stress was **{lowest_row['period']}** ({lowest_row['high_stress_pct']:.1f}% high stress, {int(lowest_row['readings'])} readings).
+                {trend_label} (about {slope:+.1f} percentage points per month).
+                """
+            )
+
+            # Build stacked bar with rich hover content
+            hover_lookup = (
+                month_trend[["period", "readings", "high_stress_pct"]]
+                .rename(columns={"period": "year_month"})
+                .copy()
+            )
+            month_dist2 = month_dist.merge(hover_lookup, on="year_month", how="left")
+            month_dist2["interpretation"] = month_dist2["high_stress_pct"].map(_stress_month_interpretation)
+
+            # Month-level summary for tooltips: low/med/high + totals + % high
+            mwide = (
+                month_dist2.pivot_table(index="year_month", columns="Stress_Category", values="count", aggfunc="sum")
+                .fillna(0)
+                .reset_index()
+            )
+            for col in ["Low", "Medium", "High"]:
+                if col not in mwide.columns:
+                    mwide[col] = 0
+            mwide["total_readings"] = (mwide["Low"] + mwide["Medium"] + mwide["High"]).astype(int)
+            mwide = mwide.merge(
+                month_trend[["period", "high_stress_pct"]].rename(columns={"period": "year_month"}),
+                on="year_month",
+                how="left",
+            )
+            fallback_pct = pd.Series(
+                np.where(mwide["total_readings"] > 0, 100.0 * (mwide["High"] / mwide["total_readings"]), 0.0),
+                index=mwide.index,
+                dtype="float64",
+            )
+            mwide["high_stress_pct"] = mwide["high_stress_pct"].astype("float64").fillna(fallback_pct)
+            mwide["interpretation"] = mwide["high_stress_pct"].map(_stress_month_interpretation)
+            # Monthly hover: month/year + total only (segment hover shows just its own count)
+            mwide["month_label"] = pd.to_datetime(mwide["year_month"] + "-01", errors="coerce").dt.strftime("%b %Y")
+            mwide["month_label"] = mwide["month_label"].fillna(mwide["year_month"].astype(str))
+            month_tip = {
+                str(r["year_month"]): (
+                    str(r["month_label"]),
+                    int(r["total_readings"]),
+                )
+                for _, r in mwide.iterrows()
+            }
+
             tfig = go.Figure()
-            tfig.add_trace(
-                go.Bar(
-                    x=month_trend["period"],
-                    y=month_trend["readings"],
-                    name="Readings",
-                    marker=dict(color="#5eead4", line=dict(color="#0f766e", width=1)),
+            for cat in ["Low", "Medium", "High"]:
+                sub = month_dist2[month_dist2["Stress_Category"] == cat]
+                if sub.empty:
+                    continue
+                # For each stacked segment, show full month context in hover (counts, readings, % high)
+                custom = np.array([month_tip.get(str(m), ("", 0)) for m in sub["year_month"].astype(str)])
+                tfig.add_trace(
+                    go.Bar(
+                        x=sub["year_month"].astype(str),
+                        y=sub["count"].astype(int),
+                        name=cat,
+                        marker=dict(color=COLOR_MAP.get(cat, "#94a3b8")),
+                        customdata=custom,
+                        hovertemplate=(
+                            "<b>%{customdata[0]}</b><br>"
+                            f"{cat} count: %{{y}}<br>"
+                            "Total readings: %{customdata[1]}"
+                            "<extra></extra>"
+                        ),
+                    )
                 )
-            )
-            tfig.add_trace(
-                go.Scatter(
-                    x=month_trend["period"],
-                    y=month_trend["high_stress_pct"],
-                    name="% High-stress readings",
-                    yaxis="y2",
-                    mode="lines+markers",
-                    line=dict(color="#e11d48", width=3),
-                    marker=dict(size=11, color="#fda4af"),
-                    fill="tozeroy",
-                    fillcolor="rgba(225,29,72,0.07)",
-                )
-            )
+
             tfig.update_layout(
-                title="Stress level changes over time (by month)",
-                yaxis=dict(title="Readings", showgrid=True, gridcolor="#f1f5f9"),
-                yaxis2=dict(title="% readings = High (label 2)", overlaying="y", side="right", range=[0, 105], showgrid=False),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                paper_bgcolor="#fafafa",
+                title="Monthly stress trend (distribution of readings)",
+                barmode="stack",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                yaxis=dict(title="Readings (count)", showgrid=True, gridcolor="#f1f5f9"),
+                xaxis=dict(title="Month", tickangle=-35),
+                paper_bgcolor="#ffffff",
                 plot_bgcolor="#ffffff",
-                height=440,
+                height=460,
                 margin=dict(b=88),
             )
+            tfig.update_traces(marker_line_width=0)
             ev_cov = plotly_events(
                 tfig,
                 click_event=True,
@@ -976,91 +1385,443 @@ if menu == "Dashboard":
                 if day_trend.empty:
                     st.caption("No daily rows for this month.")
                 else:
-                    dfig = go.Figure()
-                    dfig.add_trace(
-                        go.Scatter(
-                            x=day_trend["period"],
-                            y=day_trend["high_stress_pct"],
-                            name="% High-stress",
-                            mode="lines+markers",
-                            line=dict(color="#be123c", width=3),
-                            marker=dict(size=9),
-                        )
+                    # Build daily distribution for hover summaries (low/med/high counts per day)
+                    dd = sub_m.dropna(subset=["date_key", "Stress_Category"]).copy()
+                    day_dist = (
+                        dd.groupby(["date_key", "Stress_Category"], as_index=False)
+                        .size()
+                        .rename(columns={"size": "count"})
+                    )
+                    piv = (
+                        day_dist.pivot_table(index="date_key", columns="Stress_Category", values="count", aggfunc="sum")
+                        .fillna(0)
+                        .reset_index()
+                    )
+                    for col in ["Low", "Medium", "High"]:
+                        if col not in piv.columns:
+                            piv[col] = 0
+                    piv["date_key"] = piv["date_key"].astype(str)
+
+                    daily = day_trend.merge(piv, left_on="period", right_on="date_key", how="left").fillna(0)
+                    daily["interpretation"] = daily["high_stress_pct"].map(_stress_month_interpretation)
+                    daily["high_count"] = daily["High"].astype(int)
+
+                    # Two-row chart: top = % high stress, bottom = readings volume (no dual axis)
+                    dfig = make_subplots(
+                        rows=2,
+                        cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.10,
+                        row_heights=[0.65, 0.35],
+                        subplot_titles=("High-stress share by day", "Readings volume (context)"),
+                    )
+                    custom = np.stack(
+                        [
+                            daily["readings"].astype(int).to_numpy(),
+                            daily["high_count"].astype(int).to_numpy(),
+                            daily["Low"].astype(int).to_numpy(),
+                            daily["Medium"].astype(int).to_numpy(),
+                            daily["High"].astype(int).to_numpy(),
+                            daily["interpretation"].astype(str).to_numpy(),
+                        ],
+                        axis=-1,
                     )
                     dfig.add_trace(
                         go.Scatter(
-                            x=day_trend["period"],
-                            y=day_trend["readings"],
+                            x=daily["period"],
+                            y=daily["high_stress_pct"],
+                            name="% High stress",
+                            mode="lines+markers",
+                            line=dict(color=COLOR_MAP["High"], width=3),
+                            marker=dict(size=8, color=COLOR_MAP["High"]),
+                            customdata=custom,
+                            hovertemplate=(
+                                "<b>%{x}</b><br>"
+                                "High-stress readings: %{customdata[1]}<br>"
+                                "% High stress: %{y:.1f}%"
+                                "<extra></extra>"
+                            ),
+                        ),
+                        row=1,
+                        col=1,
+                    )
+                    dfig.add_trace(
+                        go.Bar(
+                            x=daily["period"],
+                            y=daily["readings"],
                             name="Readings",
-                            yaxis="y2",
-                            mode="lines+markers",
-                            line=dict(color="#0d9488", width=2.5),
-                            marker=dict(size=8),
-                        )
+                            marker=dict(
+                                # Calm, cool-toned green/teal volume color (healthcare-friendly)
+                                # Base: #2E7D6E (46, 125, 110) with softened opacity
+                                color="rgba(46, 125, 110, 0.78)",
+                                line=dict(color="rgba(46, 125, 110, 0.42)", width=1),
+                            ),
+                            hovertemplate="<b>%{x}</b><br>Total readings: %{y}<extra></extra>",
+                        ),
+                        row=2,
+                        col=1,
                     )
+                    dfig.update_yaxes(title_text="% High stress", range=[0, 105], showgrid=True, gridcolor="#f1f5f9", row=1, col=1)
+                    dfig.update_yaxes(title_text="Readings", showgrid=True, gridcolor="#f1f5f9", row=2, col=1)
+                    dfig.update_xaxes(title_text="Date", tickangle=-35, row=2, col=1)
+
                     dfig.update_layout(
-                        title="Daily stress pattern (lines)",
-                        yaxis=dict(title="% High-stress", range=[0, 105], showgrid=True, gridcolor="#f1f5f9"),
-                        yaxis2=dict(title="Readings", overlaying="y", side="right", showgrid=False),
-                        legend=dict(orientation="h", y=1.02),
+                        height=520,
+                        legend=dict(orientation="h", y=1.02, x=0),
                         paper_bgcolor="#ffffff",
-                        plot_bgcolor="#f8fafc",
-                        height=400,
-                        margin=dict(b=70),
+                        plot_bgcolor="#ffffff",
+                        margin=dict(b=84),
                     )
                     st.plotly_chart(dfig, use_container_width=True)
 
+                    # Insight summary for selected month (day-level)
+                    d2 = daily.copy()
+                    d2["_sort"] = pd.to_datetime(d2["period"], errors="coerce")
+                    d2 = d2.dropna(subset=["_sort"])
+                    if len(d2) >= 2:
+                        hi_day = d2.sort_values(["high_stress_pct", "readings"], ascending=[False, False]).iloc[0]
+                        lo_day = d2.sort_values(["high_stress_pct", "readings"], ascending=[True, False]).iloc[0]
+                        day_label, day_slope, day_vol = _daily_trend_label(d2.rename(columns={"period": "period"}))
+                        st.markdown(
+                            f"""
+                            **Selected month insight ({sel_m})**
+                            - **Highest-stress day**: {hi_day['period']} · {hi_day['high_stress_pct']:.1f}% high stress ({int(hi_day['high_count'])}/{int(hi_day['readings'])} readings)
+                            - **Lowest-stress day**: {lo_day['period']} · {lo_day['high_stress_pct']:.1f}% high stress ({int(lo_day['high_count'])}/{int(lo_day['readings'])} readings)
+                            - **Pattern**: {day_label} (slope {day_slope:+.1f} pp/day, volatility ±{day_vol:.0f} pp)
+                            """
+                        )
+
     with tab_a:
-        st.markdown("**Caregiver stress comparison** · who shows more high-stress readings?")
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.markdown("**🧑‍⚕️ Comparison** · physiological signals across stress levels")
+            st.caption(
+                "This chart shows how body signals and movement change from Low to High stress."
+            )
+        with c2:
+            if st.button("Ask AI", use_container_width=True, key="ask_ai_comparison"):
+                jump_to_assistant(
+                    prompt=(
+                        f"For **{filter_month}**, explain which signals (EDA, HR, TEMP, Movement) "
+                        "change the most from Low Stress to High Stress, and what a ward supervisor should watch."
+                    ),
+                    month_label=filter_month,
+                )
         if empty:
             st.caption("No data for this month.")
         else:
-            rows_c = []
-            for cid, sub in filtered.groupby("id"):
-                rows_c.append(
-                    {
-                        "id": cid,
-                        "readings": len(sub),
-                        "high": int((sub["label"] == 2).sum()),
-                        "med": int((sub["label"] == 1).sum()),
-                        "low": int((sub["label"] == 0).sum()),
-                    }
+            stress_name_map = {0: "Low Stress", 1: "Mild Stress", 2: "High Stress"}
+            signal_map = {
+                "EDA": "Skin Conductance (EDA)",
+                "HR": "Heart Rate (HR)",
+                "TEMP": "Body Temperature (TEMP)",
+                "MovementMagnitude": "Movement",
+            }
+            signal_colors = {
+                "Skin Conductance (EDA)": "#6f8fb8",  # muted blue
+                "Heart Rate (HR)": "#c97b7b",         # muted red
+                "Body Temperature (TEMP)": "#82b29a", # muted green
+                "Movement": "#a487c8",                # muted purple
+            }
+
+            means = signal_means_by_stress(filtered)
+
+            if means.empty:
+                st.caption("Not enough physiological signal data to build this comparison chart.")
+            else:
+                # Baseline-index each signal for easy comparison across different units/scales.
+                for col in ["EDA", "HR", "TEMP", "MovementMagnitude"]:
+                    baseline_row = means.loc[means["label"] == 0, col]
+                    baseline = float(baseline_row.iloc[0]) if not baseline_row.empty else float(means[col].mean())
+                    if pd.isna(baseline) or baseline == 0:
+                        baseline = float(means[col].mean()) if not pd.isna(means[col].mean()) and means[col].mean() != 0 else 1.0
+                    means[col] = (means[col] / baseline) * 100.0
+
+                plot_df = means.melt(
+                    id_vars="label",
+                    value_vars=["EDA", "HR", "TEMP", "MovementMagnitude"],
+                    var_name="signal",
+                    value_name="index_value",
+                )
+                plot_df["Stress_Level"] = plot_df["label"].map(stress_name_map)
+                plot_df["Signal"] = plot_df["signal"].map(signal_map)
+                plot_df["Raw_Feature"] = plot_df["signal"]
+
+                def _bar_interpretation(raw_feature: str, stress_level: str, idx_val: float) -> str:
+                    level_term = {
+                        "Low Stress": "near baseline",
+                        "Mild Stress": "elevated",
+                        "High Stress": "markedly elevated",
+                    }.get(stress_level, "changed")
+                    if raw_feature == "EDA":
+                        if stress_level == "Low Stress":
+                            return "EDA is near baseline, suggesting lower physiological arousal."
+                        if stress_level == "Mild Stress":
+                            return "EDA is elevated here, suggesting stronger physiological arousal at Mild Stress."
+                        return "EDA is highest here, indicating strong sympathetic activation under High Stress."
+                    if raw_feature == "HR":
+                        if stress_level == "Low Stress":
+                            return "Heart rate remains near baseline, consistent with lower strain."
+                        if stress_level == "Mild Stress":
+                            return "Heart rate rises at Mild Stress, showing an early cardiovascular stress response."
+                        return "Heart rate is strongly elevated at High Stress, supporting higher caregiver strain."
+                    if raw_feature == "TEMP":
+                        if stress_level == "Low Stress":
+                            return "Body temperature is stable at low stress."
+                        if stress_level == "Mild Stress":
+                            return "Body temperature changes modestly at Mild Stress."
+                        return "Body temperature shifts less than HR and EDA, so treat it as a supporting cue."
+                    if raw_feature == "MovementMagnitude":
+                        if stress_level == "Low Stress":
+                            return "Movement is near baseline, suggesting routine activity load."
+                        if stress_level == "Mild Stress":
+                            return "Movement increases at Mild Stress, which may reflect workload and task intensity."
+                        return "Movement is high here and helps explain physical workload alongside stress signals."
+                    return f"This feature is {level_term} at this stress level."
+
+                plot_df["Interpretation"] = plot_df.apply(
+                    lambda r: _bar_interpretation(r["Raw_Feature"], r["Stress_Level"], float(r["index_value"])),
+                    axis=1,
                 )
 
-            dist = (
-                filtered.groupby(["id", "Stress_Category"], as_index=False)
-                .size()
-                .rename(columns={"size": "count"})
-            )
-            fig_stack = px.bar(
-                dist,
-                x="id",
-                y="count",
-                color="Stress_Category",
-                color_discrete_map=COLOR_MAP,
-                title="Stress level distribution — readings per caregiver",
-                category_orders={"Stress_Category": ["Low", "Medium", "High"]},
-            )
-            fig_stack.update_layout(barmode="stack", paper_bgcolor="#fafafa", height=400, xaxis=dict(title="Caregiver ID"))
-            st.plotly_chart(fig_stack, use_container_width=True)
+                fig_grouped = px.bar(
+                    plot_df,
+                    x="Stress_Level",
+                    y="index_value",
+                    color="Signal",
+                    barmode="group",
+                    category_orders={"Stress_Level": ["Low Stress", "Mild Stress", "High Stress"]},
+                    color_discrete_map=signal_colors,
+                    title="Average Physiological Signals Across Stress Levels",
+                    text="index_value",
+                    custom_data=["Signal", "Stress_Level", "index_value", "Interpretation"],
+                )
+                fig_grouped.update_traces(
+                    texttemplate="%{text:.0f}",
+                    textposition="outside",
+                    cliponaxis=False,
+                    hovertemplate=(
+                        "<b>Feature:</b> %{customdata[0]}<br>"
+                        "<b>Stress level:</b> %{customdata[1]}<br>"
+                        "<b>Average value:</b> %{customdata[2]:.1f} (index, Low Stress = 100)<br>"
+                        "<b>Interpretation:</b> %{customdata[3]}"
+                        "<extra></extra>"
+                    ),
+                )
+                fig_grouped.update_layout(
+                    height=500,
+                    paper_bgcolor="#ffffff",
+                    plot_bgcolor="#ffffff",
+                    bargap=0.28,
+                    bargroupgap=0.10,
+                    legend=dict(orientation="h", y=1.08, x=0, title=None),
+                    margin=dict(t=85, b=55),
+                )
+                fig_grouped.update_xaxes(title_text="Stress level", showgrid=False)
+                fig_grouped.update_yaxes(
+                    title_text="Signal index (No Stress = 100)",
+                    showgrid=True,
+                    gridcolor="#edf2f7",
+                    zeroline=False,
+                )
+                st.plotly_chart(fig_grouped, use_container_width=True)
+                st.caption(
+                    "EDA and HR are key physiological stress indicators. "
+                    "Temperature often changes less, while movement adds activity and workload context."
+                )
 
-            pie_df = filtered.groupby("Stress_Category", as_index=False).size().rename(columns={"size": "n"})
-            fig_pie = px.pie(
-                pie_df,
-                names="Stress_Category",
-                values="n",
-                color="Stress_Category",
-                color_discrete_map=COLOR_MAP,
-                hole=0.45,
-                title="Overall stress mix (current filter)",
-            )
-            fig_pie.update_traces(textposition="inside", textinfo="percent+label")
-            st.plotly_chart(fig_pie, use_container_width=True)
-            st.caption("Stacked bars: readings per caregiver by stress level. Pie: share across the current filter.")
+                # Insight summary for quick non-technical interpretation.
+                high_vals = means.loc[means["label"] == 2, ["EDA", "HR", "TEMP", "MovementMagnitude"]]
+                if not high_vals.empty:
+                    growth = (high_vals.iloc[0] - 100.0).to_dict()
+                    friendly = {
+                        "EDA": "Skin Conductance (EDA)",
+                        "HR": "Heart Rate (HR)",
+                        "TEMP": "Body Temperature (TEMP)",
+                        "MovementMagnitude": "Movement",
+                    }
+                    top_signal = max(growth, key=lambda k: growth[k])
+                    low_signal = min(growth, key=lambda k: growth[k])
+                    movement_delta = growth.get("MovementMagnitude", 0.0)
+                    st.markdown(
+                        f"""
+                        **Quick insight for supervisors**
+                        - **Strongest changing feature:** {friendly[top_signal]} shows the largest increase from Low Stress to High Stress (**{growth[top_signal]:+.1f}%**).
+                        - **Most stable signal:** {friendly[low_signal]} changes the least (**{growth[low_signal]:+.1f}%**), often making it a secondary cue.
+                        - **Movement context:** Movement shifts by **{movement_delta:+.1f}%** from Low to High Stress, which helps confirm whether higher stress may also be linked to workload intensity.
+                        """
+                    )
+
+                st.markdown("---")
+                st.markdown("**High Stress Contribution by Caregiver**")
+                st.caption(
+                    "Explore which caregivers contribute the largest share of high-stress readings in a selected month."
+                )
+
+                contrib_months = month_filter_options(sensor_df)
+                if contrib_months:
+                    if "comparison_high_month" not in st.session_state:
+                        st.session_state.comparison_high_month = (
+                            filter_month if filter_month in contrib_months else contrib_months[-1]
+                        )
+                    if st.session_state.comparison_high_month not in contrib_months:
+                        st.session_state.comparison_high_month = contrib_months[-1]
+
+                    selected_contrib_month = st.selectbox(
+                        "Month (High stress caregiver contribution)",
+                        contrib_months,
+                        key="comparison_high_month",
+                    )
+
+                    contrib = high_stress_contribution_by_month(sensor_df, selected_contrib_month)
+
+                    month_label_fmt = pd.to_datetime(
+                        str(selected_contrib_month) + "-01", errors="coerce"
+                    ).strftime("%B %Y")
+                    if month_label_fmt == "NaT":
+                        month_label_fmt = str(selected_contrib_month)
+
+                    if contrib.empty:
+                        st.info(
+                            f"No High stress readings were found for {month_label_fmt}. "
+                            "Try another month to compare caregiver contribution."
+                        )
+                    else:
+                        total_high = int(contrib["high_count"].sum())
+
+                        # Refined high-stress (non-red) palette for a calm dashboard style.
+                        contrib_palette = [
+                            "#0f766e",  # deep teal
+                            "#a16207",  # dark amber/gold
+                            "#7c3a8f",  # muted plum
+                            "#9a5b2e",  # coral-brown / burnt orange
+                            "#155e75",  # slate teal-blue
+                            "#8b5e34",  # warm bronze
+                            "#5b3b73",  # muted violet-plum
+                            "#2f6f67",  # moss teal
+                            "#6b7280",  # cool neutral
+                        ]
+                        contrib["color"] = [contrib_palette[i % len(contrib_palette)] for i in range(len(contrib))]
+                        top_id = str(contrib.iloc[0]["id"]) if not contrib.empty else None
+                        contrib["hover_interp"] = contrib.apply(
+                            lambda r: (
+                                "Largest contributor to high-stress readings this month."
+                                if str(r["id"]) == top_id
+                                else "Meaningful contributor; monitor alongside shift workload and recent trend."
+                            ),
+                            axis=1,
+                        )
+
+                        fig_contrib = go.Figure(
+                            data=[
+                                go.Pie(
+                                    labels=contrib["id"],
+                                    values=contrib["high_count"],
+                                    hole=0.58,
+                                    marker=dict(
+                                        colors=contrib["color"].tolist(),
+                                        line=dict(color="#ffffff", width=1.6),
+                                    ),
+                                    hovertemplate=(
+                                        "<b>Caregiver ID:</b> %{label}<br>"
+                                        "<b>High-stress readings:</b> %{value}<br>"
+                                        "<b>Contribution:</b> %{percent:.1%}"
+                                        "<extra></extra>"
+                                    ),
+                                    textinfo="percent",
+                                    textposition="inside",
+                                )
+                            ]
+                        )
+                        fig_contrib.update_layout(
+                            title=f"High Stress Contribution by Caregiver — {month_label_fmt}",
+                            height=460,
+                            margin=dict(t=72, b=24, l=10, r=10),
+                            paper_bgcolor="#ffffff",
+                            legend=dict(orientation="h", y=-0.05, x=0, title=None),
+                        )
+
+                        pie_events = plotly_events(
+                            fig_contrib,
+                            click_event=True,
+                            hover_event=True,
+                            select_event=False,
+                            override_height=460,
+                            key="high_contrib_evt", 
+                        )
+
+                        selected_id = None
+                        if pie_events:
+                            event = pie_events[0]
+                            selected_id = event.get("label")
+                            if selected_id is None and "pointNumber" in event:
+                                pnum = event.get("pointNumber")
+                                if isinstance(pnum, int) and 0 <= pnum < len(contrib):
+                                    selected_id = str(contrib.iloc[pnum]["id"])
+                            if selected_id:
+                                st.session_state["_high_contrib_selected_id"] = str(selected_id)
+                                st.session_state["_high_contrib_selected_month"] = str(selected_contrib_month)
+
+                        if (
+                            st.session_state.get("_high_contrib_selected_month") == str(selected_contrib_month)
+                            and st.session_state.get("_high_contrib_selected_id")
+                        ):
+                            selected_id = str(st.session_state.get("_high_contrib_selected_id"))
+
+                        if selected_id is None:
+                            st.caption("Hover or click a caregiver slice to view a plain-language interpretation.")
+                        else:
+                            picked = contrib[contrib["id"] == str(selected_id)]
+                            if not picked.empty:
+                                picked_row = picked.iloc[0]
+                                if str(picked_row["id"]) == top_id:
+                                    interp = "This caregiver contributed the largest share of high-stress readings for the selected month."
+                                else:
+                                    interp = "This caregiver contributes a notable share of high-stress readings and should be reviewed alongside overall workload."
+                                st.markdown(
+                                    f"""
+                                    **Selected caregiver detail**
+                                    - **Caregiver ID:** {str(picked_row["id"])}
+                                    - **High stress readings:** {int(picked_row["high_count"])}
+                                    - **Contribution:** {float(picked_row["pct"]):.1f}%
+                                    - **Interpretation:** {interp}
+                                    """
+                                )
+
+                        if total_high < 12:
+                            st.caption("This month has limited data. Interpret results with caution.")
+
+                        top_two = contrib.head(2)
+                        if len(top_two) == 1:
+                            r0 = top_two.iloc[0]
+                            st.markdown(
+                                f"In **{month_label_fmt}**, caregiver **{r0['id']}** contributed the highest share of high-stress readings (**{r0['pct']:.1f}%**)."
+                            )
+                        elif len(top_two) >= 2:
+                            r0 = top_two.iloc[0]
+                            r1 = top_two.iloc[1]
+                            st.markdown(
+                                f"In **{month_label_fmt}**, caregiver **{r0['id']}** contributed the highest share of high-stress readings, "
+                                f"followed by **{r1['id']}** ({r0['pct']:.1f}% vs {r1['pct']:.1f}%)."
+                            )
 
     with tab_b:
-        st.markdown("### Relationship between body signals")
-        st.caption("Multi-dimensional view · HR, EDA, TEMP, movement vs stress label")
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.markdown("### 🧠 Relationship between body signals")
+            st.caption(
+                "Explores how **HR, EDA, temperature, and movement** relate to stress labels. "
+                "Look for separation between Low/Medium/High clusters and strong correlations."
+            )
+        with c2:
+            if st.button("Ask AI", use_container_width=True, key="ask_ai_signals"):
+                jump_to_assistant(
+                    prompt=(
+                        f"For **{filter_month}**, explain what the signal-relationship charts suggest: "
+                        "which signals move most with stress labels, and what patterns stand out?"
+                    ),
+                    month_label=filter_month,
+                )
         if empty:
             st.caption("No data for this month.")
         else:
@@ -1139,131 +1900,234 @@ elif menu == "Caregivers":
 elif menu == "Assistant":
     st.session_state.active_view = "assistant"
     BOT_NAME = "Care-Sync Bot"
+    CHAT_SUGGESTIONS = [
+        "Summarize stress trends for the selected month.",
+        "Which caregiver IDs show the most High-stress readings?",
+        "How should I interpret HR vs movement on the dashboard?",
+        "What does EDA suggest when stress is elevated?",
+        "Explain the heatmap colors and daily stress labels.",
+        "What limitations should I keep in mind for this dataset?",
+    ]
+
     CHAT_CSS = """
     <style>
-    /* Chat page shell */
-    .chat-shell {
-      max-width: none;
-      margin: 0;
+    :root {
+      --chat-teal-900: #0f766e;
+      --chat-teal-700: #0d9488;
+      --chat-teal-500: #14b8a6;
+      --chat-teal-200: #99f6e4;
+      --chat-teal-100: #ccfbf1;
+      --chat-teal-50: #f0fdfa;
+      --chat-ink: #0f172a;
+      --chat-muted: #64748b;
+      --chat-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+      --chat-shadow-soft: 0 4px 14px rgba(15, 23, 42, 0.06);
     }
-    .chat-header {
-      display:flex; align-items:center; justify-content:space-between;
-      padding: 12px 14px;
-      border-radius: 18px;
-      border: 1px solid rgba(15,23,42,0.10);
-      background: linear-gradient(180deg, rgba(240, 253, 244, 0.92), rgba(255,255,255,0.96));
-      box-shadow: 0 10px 30px rgba(2,6,23,0.06);
-      margin-bottom: 10px;
+
+    .msg-app {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: var(--chat-ink);
+      margin-bottom: 0.35rem;
     }
-    .assistant-bg {
-      background: linear-gradient(180deg, rgba(236, 253, 245, 0.50) 0%, rgba(255,255,255,0.0) 40%);
-      border-radius: 18px;
-      padding: 14px 14px 10px;
-      border: 1px solid rgba(15,23,42,0.06);
+
+    .msg-app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 16px;
+      border-radius: 20px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: linear-gradient(135deg, rgba(240, 253, 250, 0.95) 0%, rgba(255, 255, 255, 0.98) 55%, rgba(236, 253, 245, 0.75) 100%);
+      box-shadow: var(--chat-shadow-soft);
+      margin-bottom: 12px;
     }
-    .chat-title {
-      display:flex; align-items:center; gap:12px;
-      font-weight: 900;
+    .msg-app-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .msg-app-title-text {
+      font-weight: 850;
       letter-spacing: -0.02em;
-      color: #0f172a;
+      font-size: 1.15rem;
+      color: var(--chat-ink);
+      line-height: 1.2;
     }
-    .chat-sub { color:#64748b; font-size: 0.82rem; font-weight: 700; margin-top: 2px; }
-    .bot-avatar {
-      width: 42px; height: 42px; border-radius: 14px;
-      background: linear-gradient(135deg, #16a34a, #14b8a6);
-      display:flex; align-items:center; justify-content:center;
-      color:#fff; font-weight: 950;
-      box-shadow: 0 12px 26px rgba(2,6,23,0.12);
+    .msg-app-sub {
+      color: var(--chat-muted);
+      font-size: 0.82rem;
+      font-weight: 600;
+      margin-top: 3px;
+    }
+    .msg-app-badge {
       flex: 0 0 auto;
-    }
-    .chat-chip {
-      padding: 6px 10px;
+      padding: 6px 12px;
       border-radius: 999px;
-      font-size: 0.78rem;
-      font-weight: 900;
+      font-size: 0.75rem;
+      font-weight: 800;
       color: #065f46;
-      background: rgba(16,185,129,0.14);
-      border: 1px solid rgba(16,185,129,0.25);
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.22);
+    }
+    .msg-month-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid rgba(15, 23, 42, 0.07);
+      color: #475569;
+      font-weight: 750;
+      font-size: 0.88rem;
+      margin: 4px 0 12px;
+    }
+    .msg-month-pill span {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(20, 184, 166, 0.16), rgba(16, 185, 129, 0.12));
+      border: 1px solid rgba(20, 184, 166, 0.28);
+      color: #0f766e;
+      font-weight: 850;
     }
 
-    /* Streamlit chat message bubbles */
-    div[data-testid="stChatMessage"] {
-      border: 0 !important;
-      background: transparent !important;
-      padding: 0 !important;
-      margin: 0 !important;
+    .msg-scroll {
+      max-height: min(58vh, 560px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 16px 14px 18px;
+      border-radius: 20px;
+      border: 1px solid rgba(15, 23, 42, 0.07);
+      background:
+        radial-gradient(900px 420px at 12% 0%, rgba(20, 184, 166, 0.10), transparent 55%),
+        radial-gradient(700px 380px at 96% 18%, rgba(16, 185, 129, 0.08), transparent 52%),
+        linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), var(--chat-shadow-soft);
+      scroll-behavior: smooth;
     }
-    div[data-testid="stChatMessage"] > div {
-      border: 0 !important;
-      background: transparent !important;
-      padding: 0 !important;
-      margin: 0 !important;
+    .msg-scroll::-webkit-scrollbar { width: 8px; }
+    .msg-scroll::-webkit-scrollbar-thumb {
+      background: rgba(15, 118, 110, 0.28);
+      border-radius: 999px;
+    }
+    .msg-scroll::-webkit-scrollbar-track { background: transparent; }
+
+    .msg-row { margin-bottom: 14px; }
+    .msg-row:last-child { margin-bottom: 2px; }
+    .msg-meta {
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(100, 116, 139, 0.92);
+      margin: 0 52px 6px;
+    }
+    .msg-meta-user { text-align: right; }
+    .msg-meta-assistant { text-align: left; }
+
+    .msg-row-inner {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      width: 100%;
+    }
+    .msg-row-user .msg-row-inner { justify-content: flex-end; }
+    .msg-row-assistant .msg-row-inner { justify-content: flex-start; }
+
+    .msg-avatar {
+      flex: 0 0 auto;
+      width: 44px;
+      height: 44px;
+      filter: drop-shadow(0 8px 16px rgba(15, 23, 42, 0.12));
+    }
+    .msg-avatar-svg { display: block; width: 44px; height: 44px; }
+
+    .msg-bubble {
+      max-width: min(78%, 560px);
+      padding: 12px 14px 12px;
+      border-radius: 18px;
+      font-size: 0.98rem;
+      line-height: 1.55;
+      word-wrap: break-word;
+    }
+    .msg-bubble strong { color: inherit; font-weight: 800; }
+
+    /* User: deeper teal tint (same family as assistant, darker/s richer) */
+    .msg-bubble-user {
+      color: #042f2e;
+      background: linear-gradient(180deg, rgba(45, 212, 191, 0.42) 0%, rgba(20, 184, 166, 0.30) 100%);
+      border: 1px solid rgba(13, 148, 136, 0.35);
+      box-shadow: var(--chat-shadow-soft);
+      border-bottom-right-radius: 8px;
+    }
+    /* Assistant: soft mint/teal wash */
+    .msg-bubble-assistant {
+      color: #0f172a;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(240, 253, 250, 0.92) 100%);
+      border: 1px solid rgba(20, 184, 166, 0.22);
+      box-shadow: var(--chat-shadow-soft);
+      border-bottom-left-radius: 8px;
     }
 
-    /* message container */
-    .chat-shell div[data-testid="stChatMessageContent"] {
-      padding: 10px 12px !important;
-      border-radius: 16px !important;
-      border: 1px solid rgba(15,23,42,0.08) !important;
-      box-shadow: 0 10px 24px rgba(2,6,23,0.05) !important;
-      font-size: 0.98rem !important;
+    @media (max-width: 900px) {
+      .msg-bubble { max-width: 88%; font-size: 0.95rem; }
+      .msg-scroll { max-height: 52vh; padding: 14px 12px 16px; }
+      .msg-meta { margin: 0 46px 6px; }
+    }
+
+    /* Composer: chat input */
+    div[data-testid="stChatInput"] textarea {
+      min-height: 44px !important;
       line-height: 1.45 !important;
     }
-
-    /* assistant bubble */
-    .chat-shell div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) div[data-testid="stChatMessageContent"] {
-      background: rgba(255,255,255,0.92) !important;
-    }
-
-    /* user bubble */
-    .chat-shell div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) div[data-testid="stChatMessageContent"] {
-      background: linear-gradient(180deg, rgba(22,163,74,0.18), rgba(20,184,166,0.14)) !important;
-      border-color: rgba(16,185,129,0.25) !important;
-    }
-
-    /* Chat input */
-    div[data-testid="stChatInput"] textarea {
-      border-radius: 999px !important;
-    }
     div[data-testid="stChatInput"] > div {
+      border-radius: 16px !important;
+      border: 1px solid rgba(15, 23, 42, 0.10) !important;
+      box-shadow: 0 14px 34px rgba(2, 6, 23, 0.08) !important;
+      background: rgba(255, 255, 255, 0.95) !important;
+    }
+    div[data-testid="stChatInput"] > div:has(textarea:focus) {
+      border-color: rgba(20, 184, 166, 0.55) !important;
+      box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.18) !important;
+    }
+
+    .msg-app-header .header-bot-icon { flex: 0 0 auto; }
+
+    /* Suggestion chips — scope to Assistant page (same view as .msg-app) */
+    section.main div.block-container:has(.msg-app) div[data-testid="stVerticalBlockBorder"] {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(240, 253, 250, 0.55)) !important;
+      border-color: rgba(15, 23, 42, 0.08) !important;
+      border-radius: 16px !important;
+      box-shadow: var(--chat-shadow-soft) !important;
+    }
+    section.main div.block-container:has(.msg-app) div[data-testid="stVerticalBlockBorder"] button[kind="secondary"] {
       border-radius: 999px !important;
-      border: 1px solid rgba(15,23,42,0.12) !important;
-      box-shadow: 0 16px 40px rgba(2,6,23,0.08) !important;
-      background: rgba(255,255,255,0.92) !important;
+      border: 1px solid rgba(20, 184, 166, 0.28) !important;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 250, 0.65)) !important;
+      color: #0f766e !important;
+      font-weight: 700 !important;
+      font-size: 0.86rem !important;
+      padding: 0.45rem 0.75rem !important;
+      box-shadow: 0 6px 16px rgba(2, 6, 23, 0.05) !important;
+      transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease !important;
+    }
+    section.main div.block-container:has(.msg-app) div[data-testid="stVerticalBlockBorder"] button[kind="secondary"]:hover {
+      border-color: rgba(13, 148, 136, 0.55) !important;
+      box-shadow: 0 10px 22px rgba(2, 6, 23, 0.08) !important;
+      transform: translateY(-1px);
     }
     </style>
     """
     st.markdown(CHAT_CSS, unsafe_allow_html=True)
 
-    st.markdown(
-        f"""
-        <div class="chat-shell">
-          <div class="assistant-bg">
-          <div class="chat-header">
-            <div class="chat-title">
-              <div class="bot-avatar">🤖</div>
-              <div>
-                <div>{BOT_NAME}</div>
-                <div class="chat-sub">Chat about the caregiver stress dataset</div>
-              </div>
-            </div>
-            <div class="chat-chip">Online</div>
-          </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
     ui_state = {
         "selected_caregiver_id": None,
-        "month_label": None if filter_month == "All (April–December)" else filter_month,
+        "month_label": filter_month,
         "active_view": "assistant",
     }
-    st.markdown(
-        f"<div class='chat-shell'><div style='color:#475569;font-weight:900;margin:6px 2px 8px;'>Month: <span style='display:inline-block;padding:3px 10px;border-radius:999px;background:rgba(16,185,129,0.14);border:1px solid rgba(16,185,129,0.22);color:#065f46;'><b>{filter_month}</b></span></div></div>",
-        unsafe_allow_html=True,
-    )
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
@@ -1277,17 +2141,42 @@ elif menu == "Assistant":
             },
         ]
 
-    st.markdown("<div class='chat-shell'>", unsafe_allow_html=True)
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-    st.markdown("</div>", unsafe_allow_html=True)
+    filter_month_e = html_module.escape(str(filter_month))
+    thread_html = _render_chat_thread_html(st.session_state.messages)
+    st.markdown(
+        f"""
+        <div class="msg-app">
+          <div class="msg-app-header">
+            <div class="msg-app-title">
+              {_HEADER_BOT_ICON}
+              <div style="min-width:0;">
+                <div class="msg-app-title-text">{html_module.escape(BOT_NAME)}</div>
+                <div class="msg-app-sub">Clinical decision support · wearable stress intelligence</div>
+              </div>
+            </div>
+            <div class="msg-app-badge" title="Assistant is available">Online</div>
+          </div>
+          <div class="msg-month-pill" role="status">Data month <span>{filter_month_e}</span></div>
+          <div class="msg-scroll" id="caresync-chat-thread" aria-label="Conversation">
+            {thread_html}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if prompt := st.chat_input("Message…"):
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        reply = post_chat(prompt, ui_state)
-        with st.chat_message("assistant"):
-            st.markdown(reply)
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+    with st.container(border=True):
+        st.caption("Suggested questions — tap to send")
+        n_cols = 3
+        for row in range(0, len(CHAT_SUGGESTIONS), n_cols):
+            cols = st.columns(n_cols, gap="small")
+            for j in range(n_cols):
+                idx = row + j
+                if idx < len(CHAT_SUGGESTIONS):
+                    label = CHAT_SUGGESTIONS[idx]
+                    with cols[j]:
+                        if st.button(label, key=f"chat_sugg_{idx}", use_container_width=True, type="secondary"):
+                            _append_chat_exchange(label, ui_state)
+
+    if prompt := st.chat_input("Message the assistant…"):
+        _append_chat_exchange(prompt, ui_state)

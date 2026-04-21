@@ -469,24 +469,17 @@ def build_critical_stress_narrative(cell: dict) -> str:
         )
     parts.append("**Interpretation:** " + " ".join(cues))
     return "\n".join(parts)
-
-
 _SYSTEM_PROMPT = (
-    "You are an analytics copilot for a hospital stress-monitoring dashboard. "
-    "Answer **only** using the CONTEXT (sensor aggregates, digest, and any selected heatmap row). "
-    "Do not invent statistics: if a number is not in CONTEXT, say it is not in the provided summary. "
-    "For **broad or overview questions** (e.g. describe the dataset, what is in the data, summarize), "
-    "start with a short **Evidence** section: **3–5 bullet points** quoting exact figures from "
-    "**DATASET DIGEST** (counts, %, date span, label mix, means). That proves you know the table; "
-    "then answer the question in plain language. "
-    "For other dataset questions, still weave in digest numbers where relevant. "
-    "The user sees ONLY anonymized caregiver ids on the dashboard (no names or roles). "
-    "If they ask for a person's name or role, say that information is on the Caregiver Details page. "
-    "If they ask about topics clearly outside this sensor/dashboard scope, give one sentence that you "
-    "only cover this dataset and invite a relevant question. "
-    "Be concise; suggest dashboard views (Coverage, Comparison, Signal relationships) when helpful."
-)
-
+    "You are an expert Visual Analytics Copilot for a hospital stress-monitoring dashboard. "
+    "Your role is NOT just to repeat raw data, but to ANALYZE it, identify patterns, and provide actionable clinical insights. "
+    "Use the provided CONTEXT (sensor aggregates, digest, and selected heatmap rows) as your factual foundation. "
+    "If the user asks about trends, anomalies, or correlations, compare the metrics "
+    "(e.g., explain how HR and EDA interact during High vs Low stress, or point out which caregivers show sustained burnout). "
+    "You may provide specific numbers to back up your claims, but weave them naturally into an analytical narrative. "
+    "Do not invent statistics not found in the context, but DO interpret the statistics you have using logical reasoning. "
+    "The user sees ONLY anonymized caregiver ids on the dashboard. "
+    "Be concise, analytical, and suggest specific dashboard views (Coverage, Comparison, Signal relationships) to guide their data exploration."
+)   
 
 def _is_quota_or_rate_limit(exc: BaseException) -> bool:
     s = str(exc).lower()
@@ -498,6 +491,46 @@ def _is_quota_or_rate_limit(exc: BaseException) -> bool:
         return isinstance(exc, (gexc.ResourceExhausted, gexc.TooManyRequests))
     except Exception:
         return False
+
+
+def _is_model_not_found_or_unsupported(exc: BaseException) -> bool:
+    s = str(exc).lower()
+    # Common Gemini responses when a model name is invalid or not enabled for generateContent
+    return (
+        "not found" in s
+        or "is not supported for generatecontent" in s
+        or "unsupported for generatecontent" in s
+        or "404" in s
+        or "listmodels" in s
+    )
+
+
+def _gemini_list_generate_models() -> list[str]:
+    """
+    Discover available Gemini models that support generateContent.
+
+    We do this to avoid hardcoding a single model name that may not exist
+    for the current API version / project / region.
+    """
+    import google.generativeai as genai
+
+    key = (
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GOOGLE_API_KEY", "").strip()
+    )
+    genai.configure(api_key=key)
+    out: list[str] = []
+    try:
+        for m in genai.list_models():
+            # m.name often looks like "models/gemini-1.5-flash"
+            methods = getattr(m, "supported_generation_methods", None) or []
+            if any(str(mm).lower() == "generatecontent" for mm in methods):
+                name = getattr(m, "name", None)
+                if name:
+                    out.append(str(name))
+    except Exception:
+        return []
+    return out
 
 
 def _gemini_try_model(model_name: str, message: str, context: str) -> str:
@@ -527,21 +560,53 @@ def _gemini_try_model(model_name: str, message: str, context: str) -> str:
 
 def _gemini_reply(message: str, context: str) -> str:
     preferred = os.environ.get("GEMINI_MODEL", "").strip()
-    candidates = []
+
+    # 1) Discover models that support generateContent for this key/project.
+    discovered = _gemini_list_generate_models()
+
+    # 2) Build candidate list:
+    #    - Try explicit env var first (accept both "gemini-*" and "models/gemini-*")
+    #    - Then prefer smaller/faster "flash" family if present
+    #    - Finally, try anything discovered that can generate content
+    candidates: list[str] = []
     if preferred:
         candidates.append(preferred)
-    for m in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"):
-        if m not in candidates:
-            candidates.append(m)
+        if not preferred.startswith("models/"):
+            candidates.append("models/" + preferred)
+
+    # Prefer "flash" then others, but never rely on these existing.
+    if discovered:
+        flash_first = [m for m in discovered if "flash" in m.lower()]
+        others = [m for m in discovered if m not in flash_first]
+        candidates.extend(flash_first + others)
+    else:
+        # If discovery fails (network / permissions), fall back to a small, modern set.
+        # We still try multiple options and allow GEMINI_MODEL to override.
+        candidates.extend(
+            [
+                "models/gemini-2.5-flash",
+                "models/gemini-2.0-flash",
+                "models/gemini-2.0-flash-lite",
+                "models/gemini-1.5-flash",
+            ]
+        )
+
+    # De-dupe while preserving order
+    seen = set()
+    candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
     last_err: BaseException | None = None
     for model_name in candidates:
         try:
             return _gemini_try_model(model_name, message, context)
         except Exception as exc:
             last_err = exc
-            if not _is_quota_or_rate_limit(exc):
-                raise
-            continue
+            # If a particular model isn't available/supported, try the next one.
+            if _is_model_not_found_or_unsupported(exc):
+                continue
+            # If quota/rate limited, also try the next one (some models may still have quota).
+            if _is_quota_or_rate_limit(exc):
+                continue
+            raise
     if last_err:
         raise last_err
     raise RuntimeError("Gemini: no model candidates configured")
