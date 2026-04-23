@@ -1,0 +1,83 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 14px;
+  margin: 10px 0 22px;
+}
+
+.card {
+  position: relative;
+  background: linear-gradient(180deg, #ffffff, #f9fbfd);
+  border: 1px solid #e4ebf3;
+  border-radius: 16px;
+  padding: 16px 18px;
+  box-shadow: 0 10px 26px rgba(14, 30, 58, 0.08);
+  overflow: hidden;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 5px;
+  border-radius: 16px 0 0 16px;
+}
+
+.teal::before {
+  background: linear-gradient(180deg, #2fa084, #1f6f5f);
+}
+
+.sage::before {
+  background: linear-gradient(180deg, #6fcf97, #2fa084);
+}
+
+.amber::before {
+  background: linear-gradient(180deg, #f2c44a, #f79a19);
+}
+
+.rose::before {
+  background: linear-gradient(180deg, #cf0f0f, #b51c1c);
+}
+
+.teal {
+  background: linear-gradient(180deg, #ffffff, #f2fbf7);
+}
+
+.sage {
+  background: linear-gradient(180deg, #ffffff, #f4fbf6);
+}
+
+.amber {
+  background: linear-gradient(180deg, #ffffff, #fffbf2);
+}
+
+.rose {
+  background: linear-gradient(180deg, #ffffff, #fff5f5);
+}
+
+.label {
+  font-size: 0.77rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6c8198;
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+.value {
+  font-size: 1.8rem;
+  color: #182a40;
+  line-height: 1.1;
+  margin-bottom: 8px;
+}
+
+.note {
+  font-size: 0.82rem;
+  color: #7f94aa;
+}
+
+@media (max-width: 1050px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(170px, 1fr));
+  }
+}
