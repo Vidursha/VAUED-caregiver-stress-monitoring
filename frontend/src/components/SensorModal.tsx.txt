@@ -1,0 +1,94 @@
+import type { SensorRecord } from "../types";
+import { labelText, stressIndexFromLabel, toFixed } from "../utils/format";
+import styles from "../styles/SensorModal.module.css";
+import {
+  Activity,
+  BrainCircuit,
+  HeartPulse,
+  Thermometer,
+  Vibrate,
+  Waves,
+  UserRound,
+} from "lucide-react";
+
+type Props = {
+  record: SensorRecord | null;
+  loading?: boolean;
+  onClose: () => void;
+  onAskAi: () => void;
+};
+
+export function SensorModal({ record, loading = false, onClose, onAskAi }: Props) {
+  if (!record) return null;
+
+  const label = Number(record.label);
+  const stressIndex = stressIndexFromLabel(label);
+  const badgeText = String(record.id).slice(0, 2).toUpperCase();
+  const statusText = label === 2 ? "High stress" : label === 1 ? "Elevated stress" : "Low stress";
+  const statusTone = label === 2 ? "high" : label === 1 ? "medium" : "low";
+  const timeText = record.time || (record.datetime ? record.datetime.split(" ")[1] : "n/a");
+
+  const tiles = [
+    { key: "stress", icon: <BrainCircuit size={14} />, title: "Stress index", value: `${stressIndex}%` },
+    { key: "hr", icon: <HeartPulse size={14} />, title: "Heart rate", value: `${toFixed(Number(record.HR), 1)} bpm` },
+    { key: "motion", icon: <Waves size={14} />, title: "Motion activity", value: `${toFixed(Number(record.MovementMagnitude), 1)}%` },
+    { key: "eda", icon: <Activity size={14} />, title: "EDA (arousal)", value: `${toFixed(Number(record.EDA), 2)}` },
+    { key: "temp", icon: <Thermometer size={14} />, title: "Temperature", value: `${toFixed(Number(record.TEMP), 1)} C` },
+    { key: "accel", icon: <Vibrate size={14} />, title: "Accel. magnitude", value: `${toFixed(Number(record.MovementMagnitude), 1)}` },
+  ];
+
+  return (
+    <div className={styles.backdrop} onClick={onClose}>
+      <article className={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <header className={styles.header}>
+          <h3>Sensor reading</h3>
+          <button onClick={onClose} aria-label="Close modal">
+            x
+          </button>
+        </header>
+
+        <div className={styles.identityRow}>
+          <div className={styles.avatar}>
+            <UserRound size={15} />
+            <span>{badgeText}</span>
+          </div>
+          <div className={styles.identity}>
+            <h4>Caregiver ID {record.id}</h4>
+            <p>Wearable reading · sensor file only</p>
+            <span className={`${styles.statusPill} ${styles[statusTone]}`}>{statusText}</span>
+          </div>
+        </div>
+
+        <div className={`${styles.stressBanner} ${styles[statusTone]}`}>
+          <strong>Stress index: {stressIndex}%</strong>
+          <span>{statusText} reading for this timepoint.</span>
+        </div>
+
+        <section className={styles.grid}>
+          {tiles.map((tile) => (
+            <div key={tile.key} className={styles.tile}>
+              <div className={styles.tileIcon}>{tile.icon}</div>
+              <div>
+                <span>{tile.title}</span>
+                <strong>{tile.value}</strong>
+              </div>
+            </div>
+          ))}
+        </section>
+
+        <p className={styles.time}>
+          Representative row for cell · time {timeText} · stress {labelText(label)}
+        </p>
+
+        <footer className={styles.actions}>
+          <button className={styles.secondary} onClick={onAskAi} disabled={loading}>
+            {loading ? "Messaging..." : "Message"}
+          </button>
+          <button className={styles.primary} onClick={onClose}>
+            Done
+          </button>
+        </footer>
+      </article>
+    </div>
+  );
+}
