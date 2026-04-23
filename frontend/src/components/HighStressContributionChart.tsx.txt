@@ -1,0 +1,158 @@
+import styles from "../styles/DashboardCharts.module.css";
+import {
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+} from "recharts";
+import type { SensorRecord } from "../types";
+import { getDistinctMonths, monthFromRecord } from "../utils/heatmap";
+
+type Slice = {
+  caregiverId: string;
+  count: number;
+  pct: number;
+};
+
+type Props = {
+  allRecords: SensorRecord[];
+  month: string;
+  onMonthChange: (month: string) => void;
+  onAskAi: () => void;
+};
+
+const PALETTE = [
+  // Palette from reference (plus harmonious related tones for additional slices)
+  "#BBCB64", // soft lime-olive
+  "#FFE52A", // warm yellow
+  "#F79A19", // orange
+  "#CF0F0F", // deep red
+  "#9FB84E", // deeper olive
+  "#FFD24A", // softer yellow
+  "#E58A1A", // muted orange
+  "#B51C1C", // muted red
+  "#C7D47A", // light olive
+  "#F2C44A", // muted amber
+];
+
+function formatMonthLabel(ym: string) {
+  const [y, m] = (ym || "").split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const idx = Math.max(0, Math.min(11, Number(m) - 1));
+  if (!y || !m) return ym;
+  return `${months[idx]} ${y}`;
+}
+
+function buildSlices(records: SensorRecord[], selectedMonth: string): Slice[] {
+  const high = records.filter(
+    (r) => monthFromRecord(r) === selectedMonth && Number(r.label) === 2,
+  );
+  const total = high.length;
+  const byId = new Map<string, number>();
+  for (const r of high) {
+    const id = String(r.id);
+    byId.set(id, (byId.get(id) ?? 0) + 1);
+  }
+  const slices = [...byId.entries()]
+    .map(([caregiverId, count]) => ({
+      caregiverId,
+      count,
+      pct: total ? (count / total) * 100 : 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  return slices;
+}
+
+export function HighStressContributionChart({ allRecords, month, onMonthChange, onAskAi }: Props) {
+  const months = getDistinctMonths(allRecords);
+  const slices = buildSlices(allRecords, month);
+
+  const summary = (() => {
+    if (!slices.length) return `No high-stress readings recorded for ${formatMonthLabel(month)}.`;
+    const top = slices[0];
+    const second = slices[1];
+    const part2 = second ? `, followed by ${second.caregiverId}` : "";
+    return `In ${formatMonthLabel(month)}, caregiver ${top.caregiverId} contributed the highest share of high-stress readings${part2}.`;
+  })();
+
+  return (
+    <section className={styles.chartCard}>
+      <div className={styles.chartHeader}>
+        <div>
+          <h3>High Stress Contribution by Caregiver</h3>
+          <p>Shows who contributes the largest share of High-stress (label 2) readings in a month.</p>
+        </div>
+        <div className={styles.headerActions}>
+          <select className={styles.smallSelect} value={month} onChange={(e) => onMonthChange(e.target.value)}>
+            {months.map((m) => (
+              <option key={m} value={m}>
+                {formatMonthLabel(m)}
+              </option>
+            ))}
+          </select>
+          <button className={styles.askButton} onClick={onAskAi}>
+            Ask AI
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.rechartsWrap}>
+        <ResponsiveContainer width="100%" height={320}>
+          <PieChart>
+            <Pie
+              data={slices}
+              dataKey="count"
+              nameKey="caregiverId"
+              innerRadius={78}
+              outerRadius={115}
+              paddingAngle={2}
+              stroke="#ffffff"
+              strokeWidth={2}
+            >
+              {slices.map((entry, idx) => (
+                <Cell key={entry.caregiverId} fill={PALETTE[idx % PALETTE.length]} />
+              ))}
+            </Pie>
+            <Tooltip
+              content={(props: any) => {
+                const { active, payload } = props;
+                if (!active || !payload?.length) return null;
+                const row = payload[0].payload as Slice;
+                return (
+                  <div className={styles.tooltip}>
+                    <div className={styles.tooltipTitle}>Caregiver {row.caregiverId}</div>
+                    <div className={styles.tooltipRow}>
+                      <span className={styles.dot} style={{ background: "#b07a86" }} />
+                      <span>High readings:</span>
+                      <strong>{row.count}</strong>
+                    </div>
+                    <div className={styles.tooltipRow}>
+                      <span className={styles.dot} style={{ background: "#7f8da2" }} />
+                      <span>Contribution:</span>
+                      <strong>{row.pct.toFixed(1)}%</strong>
+                    </div>
+                  </div>
+                );
+              }}
+            />
+            <Legend
+              verticalAlign="bottom"
+              height={28}
+              iconType="circle"
+              formatter={(value) => <span style={{ color: "#4c657e", fontSize: 12 }}>{value}</span>}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className={styles.explainBox}>
+        <h4>Summary</h4>
+        <p>{summary}</p>
+      </div>
+    </section>
+  );
+}
+
