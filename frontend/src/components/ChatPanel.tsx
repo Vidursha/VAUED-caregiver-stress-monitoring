@@ -18,6 +18,41 @@ export function ChatPanel({ messages, loading, error, onSend, suggestions = [] }
   const [input, setInput] = useState("");
   const hasMessages = messages.length > 0;
 
+  function renderRichLine(text: string) {
+    // Render "Open visualization: /?..." as a clickable link.
+    const m = text.match(/^\s*(?:-|\*)?\s*Open visualization:\s*(\/\S+)\s*$/i);
+    if (m?.[1]) {
+      const href = m[1].startsWith("/") ? m[1] : `/${m[1]}`;
+      return (
+        <span>
+          Open visualization:{" "}
+          <a href={href} className={styles.inlineLink}>
+            Open
+          </a>
+        </span>
+      );
+    }
+
+    // Render simple markdown-like [Label](/path) links (used by some providers).
+    const link = text.match(/\[([^\]]+)\]\((\/[^)]+)\)/);
+    if (link) {
+      const [all, label, href] = link;
+      const before = text.slice(0, Math.max(0, text.indexOf(all)));
+      const after = text.slice(text.indexOf(all) + all.length);
+      return (
+        <span>
+          {before}
+          <a href={href} className={styles.inlineLink}>
+            {label}
+          </a>
+          {after}
+        </span>
+      );
+    }
+
+    return text;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
@@ -35,11 +70,6 @@ export function ChatPanel({ messages, loading, error, onSend, suggestions = [] }
 
   function normalizeLine(line: string) {
     return line.replace(/^[-*•]\s+/, "").replace(/\*\*/g, "").trim();
-  }
-
-  function clip(text: string, max = 120) {
-    if (text.length <= max) return text;
-    return `${text.slice(0, max - 1).trimEnd()}…`;
   }
 
   function toStructuredAssistantContent(content: string) {
@@ -63,27 +93,24 @@ export function ChatPanel({ messages, loading, error, onSend, suggestions = [] }
       .filter((item): item is { label: string; value: string } => Boolean(item))
       .slice(0, 3);
 
-    const actionText = clip(
-      source.find((line) => /recommend|action|monitor|attention|prioritize/i.test(line)) || source[0] || "",
-      126,
-    );
+    const actionText =
+      source.find((line) => /recommend|action|monitor|attention|prioritize/i.test(line)) || source[0] || "";
 
     const insightCards = source
       .filter((line) => normalizeLine(line) !== normalizeLine(actionText))
-      .slice(0, 4)
+      .slice(0, 5)
       .map((line) => {
-        const [title, ...rest] = line.split(/[:\-]\s+/);
-        if (!rest.length) {
-          return { title: "Insight", body: clip(line, 120) };
+        const idx = line.indexOf(":");
+        if (idx <= 0) {
+          return { title: "Insight", body: line };
         }
-        return { title: clip(title || "Insight", 40), body: clip(rest.join(" - "), 120) };
+        const title = line.slice(0, idx).trim() || "Insight";
+        const body = line.slice(idx + 1).trim();
+        return { title, body: body || line };
       });
 
     const compactInsightCards = insightCards.slice(0, 4);
-    const isCompact =
-      metrics.length === 0 &&
-      compactInsightCards.length <= 2 &&
-      compactInsightCards.every((item) => item.body.length <= 95);
+    const isCompact = metrics.length === 0 && compactInsightCards.length <= 2;
 
     return { actionText, metrics, insightCards: compactInsightCards, isCompact };
   }
@@ -139,7 +166,7 @@ export function ChatPanel({ messages, loading, error, onSend, suggestions = [] }
               structured.insightCards.map((item, idx) => (
                 <article key={`${item.title}-${idx}`} className={styles.insightCard}>
                   <h5>{item.title}</h5>
-                  <p>{item.body}</p>
+                  <p>{renderRichLine(item.body)}</p>
                 </article>
               ))
             ) : (

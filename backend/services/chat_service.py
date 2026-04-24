@@ -32,6 +32,205 @@ OFF_TOPIC_REPLY = (
     "- Please ask something related to caregiver stress, trends, or the dashboard."
 )
 
+def _month_label_from_ui(ui_state: dict | None) -> str | None:
+    ui_state = ui_state or {}
+    month = (ui_state.get("month_label") or "").strip()
+    return month or None
+
+
+def _offline_answer_from_db(message: str, ui_state: dict | None) -> str | None:
+    """
+    Produce distinct, data-driven answers even without an LLM key.
+    Returns a plain text block (not yet bullet-normalized) or None.
+    """
+    m = (message or "").lower()
+    month = _month_label_from_ui(ui_state)
+    caregiver_id = (ui_state or {}).get("selected_caregiver_id")
+    caregiver_id = str(caregiver_id).strip() if caregiver_id else None
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    where = []
+    params = []
+    if month:
+        where.append(f"{_month_label_sql_expr()} = ?")
+        params.append(month)
+    if caregiver_id:
+        where.append("CAST(id AS TEXT) = ?")
+        params.append(caregiver_id)
+    wh = (" WHERE " + " AND ".join(where)) if where else ""
+
+    try:
+        # Highest burnout risk intent
+        if any(k in m for k in ("highest burnout", "burnout risk", "who is at highest", "most at risk")):
+            rows = c.execute(
+                f"""
+                SELECT
+                  CAST(id AS TEXT) AS id,
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN label = 2 THEN 1 ELSE 0 END) AS high_n,
+                  AVG(label) AS mean_label
+                FROM sensor_data
+                {wh}
+                GROUP BY CAST(id AS TEXT)
+                ORDER BY high_n DESC, mean_label DESC, n DESC, id ASC
+                LIMIT 5
+                """,
+                params,
+            ).fetchall()
+            if not rows:
+                return None
+            top = rows[0]
+            scope = f"for **{month}**" if month else "across the full dataset"
+            lines = [
+                f"Highest burnout risk {scope}: caregiver **{top['id']}**.",
+                f"High-stress (label 2) readings: **{int(top['high_n'])}** out of **{int(top['n'])}**.",
+                f"Average stress label: **{float(top['mean_label']):.2f}** (0=Low, 2=High).",
+                "Next highest contributors: "
+                + ", ".join(f"{r['id']} (High={int(r['high_n'])})" for r in rows[1:]) if len(rows) > 1 else
+                "No other caregivers in this scope.",
+            ]
+            return "\n".join(lines)
+
+        # Shift pattern intent (joins caregiver_details)
+        if any(k in m for k in ("shift", "peak", "pattern", "stress peak")):
+            sd_where = []
+            sd_params = []
+            if month:
+                sd_where.append(f"{_month_label_sql_expr()} = ?")
+                sd_params.append(month)
+            if caregiver_id:
+                sd_where.append("CAST(sd.id AS TEXT) = ?")
+                sd_params.append(caregiver_id)
+            sd_wh = (" WHERE " + " AND ".join(sd_where)) if sd_where else ""
+
+            rows = c.execute(
+                f"""
+                SELECT
+                  COALESCE(cd.[Shift Time], cd.ShiftTime, cd.shift_time, cd.shift, 'Unknown') AS shift,
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN sd.label = 2 THEN 1 ELSE 0 END) AS high_n,
+                  AVG(sd.label) AS mean_label
+                FROM sensor_data sd
+                LEFT JOIN caregiver_details cd
+                  ON CAST(cd.ID AS TEXT) = CAST(sd.id AS TEXT)
+                {sd_wh}
+                GROUP BY shift
+                ORDER BY high_n DESC, mean_label DESC, n DESC, shift ASC
+                """,
+                sd_params,
+            ).fetchall()
+            if rows:
+                scope = f"for **{month}**" if month else "across the full dataset"
+                top = rows[0]
+                share = (int(top["high_n"]) / int(top["n"])) * 100 if int(top["n"]) else 0
+                return "\n".join(
+                    [
+                        f"Stress peaks by shift {scope}: **{top['shift']}**.",
+                        f"High-stress share in that shift: **{share:.1f}%** ({int(top['high_n'])}/{int(top['n'])}).",
+                        "Other shifts ranked by High-stress count: "
+                        + ", ".join(f"{r['shift']} (High={int(r['high_n'])})" for r in rows[1:4])
+                        if len(rows) > 1
+                        else "No comparison shifts available.",
+                        "Action: prioritize staffing support / breaks during the top shift window.",
+                    ]
+                )
+
+        # Supervisor focus intent
+        if any(k in m for k in ("ward supervisor", "focus on", "what should", "recommend", "action")):
+            overall = c.execute(
+                f"""
+                SELECT
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN label = 2 THEN 1 ELSE 0 END) AS high_n,
+                  AVG(label) AS mean_label
+                FROM sensor_data
+                {wh}
+                """,
+                params,
+            ).fetchone()
+            if overall and int(overall["n"] or 0) > 0:
+                n = int(overall["n"])
+                high_n = int(overall["high_n"])
+                share = (high_n / n) * 100 if n else 0
+                scope = f"**{month}**" if month else "the current dataset scope"
+                return "\n".join(
+                    [
+                        f"Supervisor focus for {scope}: High-stress share is **{share:.1f}%** ({high_n}/{n}).",
+                        f"Average stress label is **{float(overall['mean_label']):.2f}** (0=Low, 2=High).",
+                        "Action: investigate top contributing caregivers and the busiest shift window; validate with Comparison + Heatmap.",
+                    ]
+                )
+    finally:
+        conn.close()
+
+    return None
+
+def _viz_deeplink(message: str, ui_state: dict | None) -> str | None:
+    """
+    If the user asks about a visualization, return a deep-link based on
+    the UI-provided visualization catalog (not backend-hardcoded chart names).
+    """
+    m = (message or "").lower().strip()
+    ui_state = ui_state or {}
+    month = (ui_state.get("month_label") or "").strip()
+    active_view = (ui_state.get("active_view") or "").strip()
+    catalog = ui_state.get("visualization_catalog") or []
+
+    if not isinstance(catalog, list):
+        catalog = []
+
+    def _tokens(s: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", (s or "").lower()))
+
+    msg_tokens = _tokens(m)
+    # Restrict linking behavior to explicit visualization/diagram intent.
+    viz_intent = bool(msg_tokens.intersection({"chart", "graph", "plot", "diagram", "heatmap", "visualization", "visualisation"}))
+    nav_intent = bool(msg_tokens.intersection({"show", "open", "goto", "go", "redirect", "take", "view"}))
+
+    best_id = ""
+    best_path = "/"
+    best_score = -1
+    for item in catalog:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        item_label = str(item.get("label") or "").strip()
+        item_path = str(item.get("path") or "/").strip() or "/"
+        if not item_id:
+            continue
+        cand_tokens = _tokens(item_id + " " + item_label)
+        score = len(msg_tokens.intersection(cand_tokens))
+        if active_view and item_id == active_view:
+            score += 3
+        if score > best_score:
+            best_score = score
+            best_id = item_id
+            best_path = item_path
+
+    # Only link from assistant when user explicitly asks for visual/nav intent
+    # and we have some meaningful match with a registered visualization.
+    if active_view in ("assistant", "", None):
+        if not (viz_intent or nav_intent):
+            return None
+        if best_score <= 0:
+            return None
+
+    # If nothing matched but user asked from a known active view, link back to it.
+    if not best_id and active_view and active_view != "assistant":
+        best_id = active_view
+        best_path = "/"
+
+    if not best_id:
+        return None
+
+    qs = f"viz={best_id}"
+    if month:
+        qs += f"&month={month}"
+    base = best_path if best_path.startswith("/") else "/"
+    return f"{base}?{qs}"
+
 
 def _stress_label_name(v):
     try:
@@ -277,7 +476,12 @@ def is_dataset_related(message: str, heatmap_cell: dict | None) -> bool:
         return False
     if _META_TOPIC.search(m) or _DATA_TOPIC.search(m):
         return True
-    if len(m) <= 72 and "?" in m:
+    # Allow concise but still dataset-specific prompts.
+    if re.search(r"\b20\d{2}-\d{2}\b", m):
+        return True
+    if re.search(r"\b(e\d+|f\d+|\d+[a-z]?)\b", m, re.I) and (
+        "caregiver" in m.lower() or "id" in m.lower()
+    ):
         return True
     short_ok = {
         "ok",
@@ -761,7 +965,8 @@ def chat_reply(message: str, ui_state=None, heatmap_cell=None):
     if gemini_key:
         try:
             provider_prefix = "**Provider:** Gemini (Google Generative AI)\n\n" if chat_debug else ""
-            return provider_prefix + _to_short_bullets(_gemini_reply(message, context))
+            reply = provider_prefix + _to_short_bullets(_gemini_reply(message, context))
+            return reply
         except Exception as exc:
             if _is_quota_or_rate_limit(exc):
                 return (
@@ -783,14 +988,22 @@ def chat_reply(message: str, ui_state=None, heatmap_cell=None):
     if openai_key:
         try:
             provider_prefix = "**Provider:** OpenAI\n\n" if chat_debug else ""
-            return provider_prefix + _to_short_bullets(_openai_reply(message, context))
+            reply = provider_prefix + _to_short_bullets(_openai_reply(message, context))
+            return reply
         except Exception as exc:
             return (
                 f"[OpenAI error: {exc}]\n\n" + _to_short_bullets(_fallback_conversational(message, context))
             )
 
     provider_prefix = "**Provider:** Offline (rule-based)\n\n" if chat_debug else ""
-    return provider_prefix + _to_short_bullets(_fallback_conversational(message, context))
+    offline_db = None
+    try:
+        offline_db = _offline_answer_from_db(message, ui_state)
+    except Exception:
+        offline_db = None
+    offline_text = offline_db if offline_db else _fallback_conversational(message, context)
+    reply = provider_prefix + _to_short_bullets(offline_text)
+    return reply
 
 
 def _fallback_conversational(message: str, context: str) -> str:

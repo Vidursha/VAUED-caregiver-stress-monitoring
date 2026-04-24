@@ -1,6 +1,7 @@
 import { ChatPanel, type ChatMessage } from "../components/ChatPanel";
 import type { SensorRecord } from "../types";
 import styles from "../styles/Assistant.module.css";
+import type { ChatMessage as ChatSessionMessage } from "../components/ChatPanel";
 
 type Props = {
   messages: ChatMessage[];
@@ -11,6 +12,16 @@ type Props = {
   months: string[];
   onMonthChange: (month: string) => void;
   selectedCell: SensorRecord | null;
+  sessions: Array<{
+    id: string;
+    title: string;
+    updatedAt: number;
+    messages: ChatSessionMessage[];
+  }>;
+  activeSessionId: string;
+  onSelectSession: (id: string) => void;
+  onNewSession: () => void;
+  onDeleteSession: (id: string) => void;
 };
 
 export function AssistantPage({
@@ -22,6 +33,11 @@ export function AssistantPage({
   months,
   onMonthChange,
   selectedCell,
+  sessions,
+  activeSessionId,
+  onSelectSession,
+  onNewSession,
+  onDeleteSession,
 }: Props) {
   const suggestions = [
     "Who is at highest burnout risk?",
@@ -30,7 +46,47 @@ export function AssistantPage({
   ];
 
   return (
-    <div className={styles.page}>
+    <div className={styles.shell}>
+      <aside className={styles.sidebar}>
+        <div className={styles.sidebarHeader}>
+          <h3>Chats</h3>
+          <button type="button" onClick={onNewSession} className={styles.newChatButton}>
+            New
+          </button>
+        </div>
+        <div className={styles.sessionList}>
+          {sessions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => onSelectSession(s.id)}
+              className={`${styles.sessionItem} ${s.id === activeSessionId ? styles.sessionItemActive : ""}`}
+              title={s.title}
+            >
+              <span className={styles.sessionRow}>
+                <span className={styles.sessionTitle}>{s.title}</span>
+                <button
+                  type="button"
+                  className={styles.deleteChatButton}
+                  title="Delete chat"
+                  aria-label={`Delete chat ${s.title}`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const ok = window.confirm(`Delete chat "${s.title}"? This cannot be undone.`);
+                    if (ok) onDeleteSession(s.id);
+                  }}
+                >
+                  🗑
+                </button>
+              </span>
+              <span className={styles.sessionMeta}>{new Date(s.updatedAt).toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <div className={styles.page}>
       <header className={styles.banner}>
         <div className={styles.bannerIdentity}>
           <div className={styles.botIcon}>CS</div>
@@ -88,6 +144,7 @@ export function AssistantPage({
         onSend={onSend}
         suggestions={suggestions}
       />
+      </div>
     </div>
   );
 }

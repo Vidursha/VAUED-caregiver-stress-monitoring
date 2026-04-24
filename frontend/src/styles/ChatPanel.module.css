@@ -244,6 +244,9 @@
 .insightCard p {
   margin: 0;
   color: #2f4a63;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .compactCard {
@@ -259,6 +262,9 @@
   margin: 0;
   color: #2f4a63;
   font-size: 0.9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .compactCard strong {
@@ -269,6 +275,17 @@
   margin: 0;
   color: #7f94aa;
   font-size: 0.72rem;
+}
+
+.inlineLink {
+  color: #124170;
+  font-weight: 700;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(18, 65, 112, 0.25);
+}
+
+.inlineLink:hover {
+  border-bottom-color: rgba(18, 65, 112, 0.7);
 }
 
 .metaIcon {

@@ -1,0 +1,184 @@
+import styles from "../styles/DashboardCharts.module.css";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+const COLORS = {
+  low: "#22c55e",
+  medium: "#f59e0b",
+  high: "#ef4444",
+};
+
+export type CoverageMonthPoint = {
+  month: string; // YYYY-MM
+  low: number;
+  medium: number;
+  high: number;
+  total: number;
+};
+
+type Props = {
+  data: CoverageMonthPoint[];
+  selectedMonth: string | null;
+  onSelectMonth: (month: string) => void;
+  onAskAi: () => void;
+};
+
+function formatMonthLabel(ym: string) {
+  const [y, m] = (ym || "").split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const idx = Math.max(0, Math.min(11, Number(m) - 1));
+  if (!y || !m) return ym;
+  return `${months[idx]} ${y}`;
+}
+
+function CustomTooltip(props: { active?: boolean; payload?: any[]; label?: string }) {
+  const { active, payload, label } = props;
+  if (!active || !payload || !payload.length) return null;
+  const point = payload[0].payload as CoverageMonthPoint;
+
+  return (
+    <div className={styles.tooltip}>
+      <div className={styles.tooltipTitle}>{formatMonthLabel(String(label))}</div>
+      <div className={styles.tooltipRow}>
+        <span className={styles.dot} style={{ background: COLORS.high }} />
+        <span>High count:</span>
+        <strong>{point.high}</strong>
+      </div>
+      <div className={styles.tooltipRow}>
+        <span className={styles.dot} style={{ background: COLORS.medium }} />
+        <span>Medium count:</span>
+        <strong>{point.medium}</strong>
+      </div>
+      <div className={styles.tooltipRow}>
+        <span className={styles.dot} style={{ background: COLORS.low }} />
+        <span>Low count:</span>
+        <strong>{point.low}</strong>
+      </div>
+      <div className={styles.tooltipDivider} />
+      <div className={styles.tooltipRow}>
+        <span>Total readings:</span>
+        <strong>{point.total}</strong>
+      </div>
+    </div>
+  );
+}
+
+export function CoverageChart({ data, selectedMonth, onSelectMonth, onAskAi }: Props) {
+  return (
+    <section className={styles.chartCard}>
+      <div className={styles.chartHeader}>
+        <div>
+          <h3>Monthly stress trend (distribution of readings)</h3>
+          <p>
+            Each month stacks Low, Medium, and High stress readings. Click a month to drill into
+            daily pattern below.
+          </p>
+        </div>
+        <button className={styles.askButton} onClick={onAskAi}>
+          Ask AI
+        </button>
+      </div>
+
+      <div className={styles.rechartsWrap}>
+        <ResponsiveContainer width="100%" height={320}>
+          <BarChart
+            data={data}
+            margin={{ top: 10, right: 18, left: 8, bottom: 16 }}
+            onClick={(state) => {
+              const idx = (state as unknown as { activeTooltipIndex?: number }).activeTooltipIndex;
+              if (idx === undefined || idx === null) return;
+              const item = data[idx];
+              if (item?.month) onSelectMonth(item.month);
+            }}
+          >
+            <CartesianGrid stroke="#e8eef5" strokeDasharray="3 3" />
+            <XAxis
+              dataKey="month"
+              tickFormatter={formatMonthLabel}
+              tick={{ fill: "#5b748c", fontSize: 12 }}
+              axisLine={{ stroke: "#d7e2ee" }}
+              tickLine={{ stroke: "#d7e2ee" }}
+            />
+            <YAxis
+              tick={{ fill: "#5b748c", fontSize: 12 }}
+              axisLine={{ stroke: "#d7e2ee" }}
+              tickLine={{ stroke: "#d7e2ee" }}
+            />
+            <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(148, 163, 184, 0.15)" }} />
+            <Legend
+              verticalAlign="top"
+              align="right"
+              iconType="circle"
+              wrapperStyle={{ paddingBottom: 6 }}
+              formatter={(value) => <span style={{ color: "#4c657e", fontSize: 12 }}>{value}</span>}
+            />
+
+            <Bar
+              dataKey="low"
+              stackId="a"
+              fill={COLORS.low}
+              name="Low"
+              radius={[0, 0, 8, 8]}
+            >
+              {data.map((entry) => {
+                const isSelected = selectedMonth === entry.month;
+                return (
+                  <Cell
+                    key={`low-${entry.month}`}
+                    stroke={isSelected ? "#1f4b6d" : undefined}
+                    strokeWidth={isSelected ? 1.5 : 0}
+                  />
+                );
+              })}
+            </Bar>
+            <Bar dataKey="medium" stackId="a" fill={COLORS.medium} name="Medium" radius={[0, 0, 0, 0]}>
+              {data.map((entry) => {
+                const isSelected = selectedMonth === entry.month;
+                return (
+                  <Cell
+                    key={`med-${entry.month}`}
+                    stroke={isSelected ? "#1f4b6d" : undefined}
+                    strokeWidth={isSelected ? 1.5 : 0}
+                  />
+                );
+              })}
+            </Bar>
+            <Bar
+              dataKey="high"
+              stackId="a"
+              fill={COLORS.high}
+              name="High"
+              radius={[8, 8, 0, 0]}
+            >
+              {data.map((entry) => {
+                const isSelected = selectedMonth === entry.month;
+                return (
+                  <Cell
+                    key={`hi-${entry.month}`}
+                    stroke={isSelected ? "#1f4b6d" : undefined}
+                    strokeWidth={isSelected ? 1.5 : 0}
+                  />
+                );
+              })}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {selectedMonth ? (
+        <p className={styles.selectedHint}>Selected month: <strong>{formatMonthLabel(selectedMonth)}</strong></p>
+      ) : (
+        <p className={styles.selectedHint}>Click a month to see the daily pattern drill-down.</p>
+      )}
+    </section>
+  );
+}

@@ -43,6 +43,12 @@ export type ChatPayload = {
     selected_caregiver_id?: string;
     month_label?: string;
     active_view?: string;
+    visualization_catalog?: Array<{
+      id: string;
+      label: string;
+      path: string;
+      tab?: string;
+    }>;
   };
   heatmap_cell?: Record<string, unknown> | null;
 };

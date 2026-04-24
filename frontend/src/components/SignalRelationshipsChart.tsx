@@ -1,0 +1,174 @@
+import {
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
+  ZAxis,
+} from "recharts";
+import type { SensorRecord } from "../types";
+import styles from "../styles/DashboardCharts.module.css";
+import { monthFromRecord } from "../utils/heatmap";
+
+type Props = {
+  allRecords: SensorRecord[];
+  month: string;
+  months: string[];
+  onMonthChange: (month: string) => void;
+  onAskAi: (month: string) => void;
+};
+
+type SignalPoint = {
+  caregiverId: string;
+  datetime: string;
+  hr: number;
+  eda: number;
+  temp: number;
+  movement: number;
+  label: number;
+};
+
+const LABEL_META: Record<number, { name: string; color: string }> = {
+  0: { name: "Low", color: "#22c55e" },
+  1: { name: "Medium", color: "#f59e0b" },
+  2: { name: "High", color: "#ef4444" },
+};
+
+function formatMonthLabel(ym: string) {
+  const [y, m] = (ym || "").split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const idx = Math.max(0, Math.min(11, Number(m) - 1));
+  if (!y || !m) return ym;
+  return `${months[idx]} ${y}`;
+}
+
+function toSignalPoint(record: SensorRecord): SignalPoint {
+  return {
+    caregiverId: String(record.id),
+    datetime: String(record.datetime || `${record.date} ${record.time}`),
+    hr: Number(record.HR),
+    eda: Number(record.EDA),
+    temp: Number(record.TEMP),
+    movement: Number(record.MovementMagnitude),
+    label: Number(record.label),
+  };
+}
+
+export function SignalRelationshipsChart({ allRecords, month, months, onMonthChange, onAskAi }: Props) {
+  const monthRecords = allRecords.filter((record) => monthFromRecord(record) === month);
+  const points = monthRecords.map(toSignalPoint);
+  const byLabel = {
+    low: points.filter((p) => p.label === 0),
+    medium: points.filter((p) => p.label === 1),
+    high: points.filter((p) => p.label === 2),
+  };
+
+  return (
+    <section className={styles.chartCard}>
+      <div className={styles.chartHeader}>
+        <div>
+          <h3>Signal relationships (HR vs EDA with movement context)</h3>
+          <p>Each point is one reading. Color shows stress level and bubble size shows movement magnitude.</p>
+        </div>
+        <div className={styles.headerActions}>
+          <select className={styles.smallSelect} value={month} onChange={(e) => onMonthChange(e.target.value)}>
+            {months.map((m) => (
+              <option key={m} value={m}>
+                {formatMonthLabel(m)}
+              </option>
+            ))}
+          </select>
+          <button className={styles.askButton} onClick={() => onAskAi(month)} type="button">
+            Ask AI
+          </button>
+        </div>
+      </div>
+
+      <div className={styles.rechartsWrap}>
+        <ResponsiveContainer width="100%" height={360}>
+          <ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
+            <CartesianGrid stroke="#e8eef5" strokeDasharray="3 3" />
+            <XAxis
+              type="number"
+              dataKey="hr"
+              name="HR"
+              unit=" bpm"
+              tick={{ fill: "#5b748c", fontSize: 12 }}
+              axisLine={{ stroke: "#d7e2ee" }}
+              tickLine={{ stroke: "#d7e2ee" }}
+              label={{ value: "Heart Rate (HR)", position: "insideBottom", offset: -4, fill: "#6b849b" }}
+            />
+            <YAxis
+              type="number"
+              dataKey="eda"
+              name="EDA"
+              tick={{ fill: "#5b748c", fontSize: 12 }}
+              axisLine={{ stroke: "#d7e2ee" }}
+              tickLine={{ stroke: "#d7e2ee" }}
+              label={{ value: "Electrodermal Activity (EDA)", angle: -90, position: "insideLeft", fill: "#6b849b" }}
+            />
+            <ZAxis type="number" dataKey="movement" range={[60, 350]} name="MovementMagnitude" />
+            <Tooltip
+              cursor={{ strokeDasharray: "3 3" }}
+              content={(props: any) => {
+                const point = props.payload?.[0]?.payload;
+                if (!props.active || !point) return null;
+                return (
+                  <div className={styles.tooltip}>
+                    <div className={styles.tooltipTitle}>Caregiver {point.caregiverId}</div>
+                    <div className={styles.tooltipRow}>
+                      <span className={styles.dot} style={{ background: LABEL_META[point.label]?.color ?? "#94a3b8" }} />
+                      <span>Stress label:</span>
+                      <strong>{LABEL_META[point.label]?.name ?? "Unknown"}</strong>
+                    </div>
+                    <div className={styles.tooltipRow}>
+                      <span>HR:</span>
+                      <strong>{point.hr.toFixed(1)} bpm</strong>
+                    </div>
+                    <div className={styles.tooltipRow}>
+                      <span>EDA:</span>
+                      <strong>{point.eda.toFixed(3)}</strong>
+                    </div>
+                    <div className={styles.tooltipRow}>
+                      <span>TEMP:</span>
+                      <strong>{point.temp.toFixed(2)}</strong>
+                    </div>
+                    <div className={styles.tooltipRow}>
+                      <span>Movement:</span>
+                      <strong>{point.movement.toFixed(2)}</strong>
+                    </div>
+                    <div className={styles.tooltipRow}>
+                      <span>Date/time:</span>
+                      <strong>{point.datetime || "n/a"}</strong>
+                    </div>
+                  </div>
+                );
+              }}
+            />
+            <Legend
+              verticalAlign="top"
+              align="right"
+              iconType="circle"
+              formatter={(value) => <span style={{ color: "#4c657e", fontSize: 12 }}>{value}</span>}
+            />
+            <Scatter name="Low stress" data={byLabel.low} fill={LABEL_META[0].color} />
+            <Scatter name="Medium stress" data={byLabel.medium} fill={LABEL_META[1].color} />
+            <Scatter name="High stress" data={byLabel.high} fill={LABEL_META[2].color} />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className={styles.explainBox}>
+        <h4>How to read this chart</h4>
+        <p>
+          Look for clusters where both HR and EDA are higher, because those readings often align with
+          higher stress labels. Bubble size adds movement context: larger bubbles suggest physical
+          activity, which helps separate workload stress from movement-driven physiological changes.
+        </p>
+      </div>
+    </section>
+  );
+}

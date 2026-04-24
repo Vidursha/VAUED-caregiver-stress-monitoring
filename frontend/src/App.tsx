@@ -1,84 +1,155 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { sendChat } from "./api/backend";
-import { Layout } from "./components/Layout";
+import { getSensorRecords, sendChat } from "./api/backend";
+import { DashboardLayout } from "./components/DashboardLayout";
+import { ProtectedRoute } from "./auth/ProtectedRoute";
+import { RoleGuard } from "./auth/RoleGuard";
 import type { ChatMessage } from "./components/ChatPanel";
 import { AssistantPage } from "./pages/AssistantPage";
 import { CaregiversPage } from "./pages/CaregiversPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { LoginPage } from "./pages/LoginPage";
+import { UserManagementPage } from "./pages/UserManagementPage";
 import type { SensorRecord } from "./types";
+import { getDistinctMonths } from "./utils/heatmap";
 
 type SendMessageOverrides = {
   monthLabel?: string;
   selectedCaregiverId?: string;
   activeView?: string;
   heatmapCell?: Record<string, unknown> | null;
+  sessionId?: string;
 };
 
+type ChatSession = {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
+};
+
+const VISUALIZATION_CATALOG = [
+  { id: "heatmap", label: "Stress Heatmap", path: "/", tab: "coverage" },
+  { id: "coverage", label: "Coverage Chart", path: "/", tab: "coverage" },
+  { id: "daily_pattern", label: "Daily Pattern Chart", path: "/", tab: "coverage" },
+  { id: "comparison", label: "Comparison Chart", path: "/", tab: "comparison" },
+  {
+    id: "high_stress_contribution",
+    label: "High Stress Contribution by Caregiver",
+    path: "/",
+    tab: "comparison",
+  },
+  { id: "signals", label: "Signal Relationships Chart", path: "/", tab: "signals" },
+];
+
 function toConciseAssistantReply(rawReply: string) {
-  const lowerRaw = rawReply.toLowerCase();
-  const isOutOfScope =
-    lowerRaw.includes("outside the scope") ||
-    lowerRaw.includes("not suitable for this dataset") ||
-    lowerRaw.includes("only help with") ||
-    (lowerRaw.includes("off-topic") && lowerRaw.includes("dataset"));
-
-  if (isOutOfScope) {
-    return [
-      "- This question is outside the scope of the caregiver stress dataset.",
-      "- I can assist with stress analysis, sensor signals (EDA, HR, TEMP, movement), and dashboard insights.",
-      "- Try asking about a caregiver trend, a month pattern, or a chart interpretation.",
-    ].join("\n");
-  }
-
-  const cleaned = rawReply
+  return rawReply
     .replace(/\r/g, "")
     .split("\n")
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line &&
-        !line.startsWith("###") &&
-        !line.startsWith("##") &&
-        !line.startsWith("**Provider:**") &&
-        line !== "---",
-    );
-
-  const explicitBullets = cleaned
-    .map((line) => line.replace(/^[-*•]\s+/, "").trim())
-    .filter((line) => line.length > 4);
-
-  const source = explicitBullets.length
-    ? explicitBullets
-    : cleaned
-        .join(" ")
-        .split(/[.?!]\s+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 10);
-
-  const trimmed = source
-    .map((line) => line.replace(/\*\*/g, "").replace(/\s+/g, " ").trim())
-    .filter(
-      (line) =>
-        !/^context[:]?$/i.test(line) &&
-        !/^you asked[:]?$/i.test(line) &&
-        !/^dataset digest/i.test(line),
-    )
-    .slice(0, 6);
-
-  const bullets = (trimmed.length ? trimmed : ["No clear summary was returned. Please ask again."])
-    .map((line) => `- ${line}`);
-  return bullets.join("\n");
+    .filter((line) => !line.trim().startsWith("**Provider:**"))
+    .join("\n")
+    .trim();
 }
 
 export default function App() {
   const navigate = useNavigate();
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>("");
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const [selectedMonth, setSelectedMonth] = useState("");
   const [availableMonths, setAvailableMonths] = useState<string[]>([]);
   const [selectedCell, setSelectedCell] = useState<SensorRecord | null>(null);
+
+  const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
+  const messages = activeSession?.messages ?? [];
+
+  function buildSession(title?: string): ChatSession {
+    const now = Date.now();
+    const id = `${now}-${Math.random().toString(16).slice(2)}`;
+    return {
+      id,
+      title: title?.trim() || "New chat",
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+    };
+  }
+
+  function createSession(title?: string) {
+    const session = buildSession(title);
+    setSessions((prev) => [session, ...prev]);
+    setActiveSessionId(session.id);
+    return session;
+  }
+
+  function deleteSession(sessionId: string) {
+    setSessions((prev) => {
+      const remaining = prev.filter((s) => s.id !== sessionId);
+      if (activeSessionId === sessionId) {
+        const nextId = remaining[0]?.id;
+        if (nextId) {
+          setActiveSessionId(nextId);
+          return remaining;
+        }
+        const fresh = buildSession("New chat");
+        setActiveSessionId(fresh.id);
+        return [fresh];
+      }
+      return remaining;
+    });
+  }
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("care-sync.chat.sessions.v1");
+      const rawActive = localStorage.getItem("care-sync.chat.activeSessionId.v1") || "";
+      const parsed = raw ? (JSON.parse(raw) as ChatSession[]) : [];
+      if (Array.isArray(parsed) && parsed.length) {
+        setSessions(parsed);
+        const activeOk = parsed.some((s) => s.id === rawActive) ? rawActive : parsed[0].id;
+        setActiveSessionId(activeOk);
+      } else {
+        const s = createSession("New chat");
+        setActiveSessionId(s.id);
+      }
+    } catch {
+      const s = createSession("New chat");
+      setActiveSessionId(s.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("care-sync.chat.sessions.v1", JSON.stringify(sessions));
+      if (activeSessionId) {
+        localStorage.setItem("care-sync.chat.activeSessionId.v1", activeSessionId);
+      }
+    } catch {
+      // ignore storage failures
+    }
+  }, [sessions, activeSessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function bootstrapAssistantDefaults() {
+      try {
+        const baseline = await getSensorRecords();
+        const months = getDistinctMonths(baseline);
+        if (cancelled) return;
+        setAvailableMonths((prev) => (prev.length ? prev : months));
+        setSelectedMonth((prev) => prev || months[months.length - 1] || "");
+      } catch {
+        // If backend isn't up yet, we silently rely on Dashboard bootstrap later.
+      }
+    }
+    bootstrapAssistantDefaults();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function sendMessage(message: string, overrides: SendMessageOverrides = {}) {
     const text = message.trim();
@@ -90,7 +161,20 @@ export default function App() {
     try {
       setChatLoading(true);
       setChatError("");
-      setMessages((prev) => [...prev, { role: "user", content: text }]);
+      let targetSessionId = overrides.sessionId ?? activeSessionId;
+      if (!targetSessionId) {
+        const s = createSession("New chat");
+        targetSessionId = s.id;
+      }
+      setSessions((prev) => {
+        const now = Date.now();
+        const idx = prev.findIndex((s) => s.id === targetSessionId);
+        if (idx < 0) return prev;
+        const next = [...prev];
+        const s = next[idx];
+        next[idx] = { ...s, updatedAt: now, messages: [...s.messages, { role: "user", content: text }] };
+        return next;
+      });
 
       // Frontend calls backend /api/chat only; backend handles model keys and .env.
       const reply = await sendChat({
@@ -100,12 +184,25 @@ export default function App() {
           selected_caregiver_id:
             overrides.selectedCaregiverId ?? (selectedCell ? String(selectedCell.id) : undefined),
           active_view: overrides.activeView ?? "assistant",
+          visualization_catalog: VISUALIZATION_CATALOG,
         },
         heatmap_cell:
-          overrides.heatmapCell ?? (selectedCell as unknown as Record<string, unknown> | null),
+          overrides.heatmapCell !== undefined ? overrides.heatmapCell : null,
       });
 
-      setMessages((prev) => [...prev, { role: "assistant", content: toConciseAssistantReply(reply) }]);
+      setSessions((prev) => {
+        const now = Date.now();
+        const idx = prev.findIndex((s) => s.id === targetSessionId);
+        if (idx < 0) return prev;
+        const next = [...prev];
+        const s = next[idx];
+        next[idx] = {
+          ...s,
+          updatedAt: now,
+          messages: [...s.messages, { role: "assistant", content: toConciseAssistantReply(reply) }],
+        };
+        return next;
+      });
     } catch (err) {
       const fallback =
         "Unable to reach the assistant right now. Ensure backend is running and restart Flask after .env updates.";
@@ -128,7 +225,12 @@ export default function App() {
       setSelectedCell(args.selectedCellRecord);
     }
     navigate("/assistant");
+    // Start a fresh thread for a visualization-triggered ask.
+    const monthTitle = args.month || selectedMonth || "All months";
+    const who = args.caregiverId ? `Caregiver ${args.caregiverId}` : args.selectedCellRecord ? `Caregiver ${args.selectedCellRecord.id}` : "";
+    const s = createSession([who, monthTitle].filter(Boolean).join(" · ") || "New chat");
     await sendMessage(args.message, {
+      sessionId: s.id,
       monthLabel: args.month ?? selectedMonth,
       selectedCaregiverId: args.caregiverId,
       activeView: args.activeView,
@@ -138,7 +240,16 @@ export default function App() {
 
   return (
     <Routes>
-      <Route path="/" element={<Layout />}>
+      <Route path="/login" element={<LoginPage />} />
+
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <DashboardLayout />
+          </ProtectedRoute>
+        }
+      >
         <Route
           index
           element={
@@ -163,7 +274,20 @@ export default function App() {
               months={availableMonths}
               onMonthChange={setSelectedMonth}
               selectedCell={selectedCell}
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onSelectSession={(id) => setActiveSessionId(id)}
+              onNewSession={() => createSession("New chat")}
+              onDeleteSession={(id) => deleteSession(id)}
             />
+          }
+        />
+        <Route
+          path="admin/users"
+          element={
+            <RoleGuard require="manage:users">
+              <UserManagementPage />
+            </RoleGuard>
           }
         />
       </Route>

@@ -10,6 +10,34 @@
   width: 100%;
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(226, 234, 244, 0.95);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff, #f7fafc);
+  box-shadow: 0 14px 28px rgba(17, 37, 62, 0.08);
+}
+
+.topbarTitle {
+  display: grid;
+  gap: 2px;
+}
+
+.topbarTitle strong {
+  color: #1c334d;
+  letter-spacing: -0.01em;
+}
+
+.topbarTitle span {
+  color: #6f8598;
+  font-size: 0.86rem;
+}
+
 @media (max-width: 900px) {
   .appShell {
     grid-template-columns: 1fr;
