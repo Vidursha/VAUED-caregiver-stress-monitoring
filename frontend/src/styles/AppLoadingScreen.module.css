@@ -1,0 +1,87 @@
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(620px 340px at 20% 20%, rgba(170, 255, 199, 0.28), transparent 60%),
+    radial-gradient(520px 260px at 80% 15%, rgba(18, 65, 112, 0.16), transparent 55%),
+    linear-gradient(180deg, #f3f8ff, #edf3f8);
+}
+
+.card {
+  width: min(420px, 90vw);
+  border: 1px solid rgba(226, 234, 244, 0.95);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 26px 20px;
+  text-align: center;
+  box-shadow: 0 24px 58px rgba(17, 37, 62, 0.14);
+}
+
+.symbolWrap {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 10px;
+}
+
+.glow {
+  position: absolute;
+  inset: 8px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(170, 255, 199, 0.8), rgba(103, 192, 144, 0.22));
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.badge {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #124170;
+  border: 1px solid rgba(18, 65, 112, 0.2);
+  background: linear-gradient(145deg, #ffffff, #eef8ff);
+  box-shadow: 0 12px 24px rgba(17, 37, 62, 0.12);
+}
+
+.ring {
+  width: 74px;
+  height: 74px;
+  border-radius: 999px;
+  margin: -79px auto 16px;
+  border: 5px solid rgba(103, 192, 144, 0.2);
+  border-top-color: #124170;
+  border-right-color: #67c090;
+  animation: spin 0.95s linear infinite;
+}
+
+.card h2 {
+  color: #1c334d;
+  margin-bottom: 4px;
+}
+
+.card p {
+  color: #6f8598;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(0.95);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.6;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

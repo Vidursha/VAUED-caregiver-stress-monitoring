@@ -1,0 +1,118 @@
+.wrapper {
+  background: white;
+  border-radius: 18px;
+  border: 1px solid #dde7ec;
+  padding: 18px 18px 16px;
+  box-shadow: 0 10px 24px rgba(24, 52, 64, 0.06);
+  width: 100%;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.wrapper h3 {
+  margin-bottom: 6px;
+  color: #1f3948;
+}
+
+.wrapper p {
+  color: #667e8f;
+  font-size: 0.92rem;
+  margin-bottom: 0;
+}
+
+.askButton {
+  border: 1px solid #c7d8dc;
+  background: #f3f9f8;
+  color: #2a635d;
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scroll {
+  overflow: auto;
+  border: 1px solid #e0e8eb;
+  border-radius: 12px;
+  background: #f9fcfc;
+}
+
+.table {
+  border-collapse: collapse;
+  min-width: max-content;
+  width: 100%;
+}
+
+.table th,
+.table td {
+  border: 1px solid #dfe7f1;
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.table td {
+  min-width: 48px;
+  height: 42px;
+}
+
+.table thead th {
+  background: #f2f8f8;
+  color: #587283;
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody th {
+  background: #f5faf9;
+  color: #406273;
+  font-weight: 700;
+  min-width: 92px;
+}
+
+.clickable {
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+
+.clickable:hover {
+  transform: scale(1.04);
+  filter: brightness(0.96);
+}
+
+.empty {
+  padding: 24px 18px;
+  background: white;
+  border-radius: 16px;
+  border: 1px solid #e3eaf2;
+}
+
+.legend {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  color: #4f6780;
+  font-size: 0.88rem;
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend i {
+  width: 13px;
+  height: 13px;
+  display: inline-block;
+  border-radius: 3px;
+  border: 1px solid rgba(47, 71, 98, 0.12);
+}

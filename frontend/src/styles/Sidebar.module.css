@@ -1,0 +1,44 @@
+.sidebar {
+  background: linear-gradient(180deg, #d7f5eb 0%, #ecf7fb 100%);
+  padding: 26px 16px;
+  border-right: 1px solid #d8e3ee;
+}
+
+.brand {
+  margin-bottom: 26px;
+  padding: 2px 6px;
+}
+
+.brand h1 {
+  font-size: 1.34rem;
+  margin-bottom: 6px;
+  color: #17324a;
+}
+
+.brand p {
+  color: #5d7a86;
+  font-size: 0.9rem;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.navItem {
+  text-decoration: none;
+  color: #2a4259;
+  background: #ffffffd8;
+  border: 1px solid #e0ebf4;
+  padding: 10px 14px;
+  border-radius: 11px;
+  font-weight: 600;
+}
+
+.active {
+  background: #10b981;
+  border-color: #10b981;
+  color: white;
+  box-shadow: 0 8px 18px rgba(16, 185, 129, 0.28);
+}
